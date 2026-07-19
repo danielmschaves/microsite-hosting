@@ -27,5 +27,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   // session email, so we don't need Auth.js to persist users.
   session: { strategy: "jwt" },
   trustHost: true,
+  // Branded login wall (see app/login/page.tsx). Unauthenticated viewers of a
+  // private site land here with their callbackUrl preserved.
+  pages: { signIn: "/login" },
   providers,
 });
+
+/** Which OAuth providers are configured — used to render only working buttons. */
+export const enabledProviders = {
+  google: Boolean(process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET),
+  github: Boolean(process.env.AUTH_GITHUB_ID && process.env.AUTH_GITHUB_SECRET),
+};

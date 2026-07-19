@@ -44,16 +44,34 @@ npm test                   # Test suite
 
 ## Key Routes
 
-- `/s/[slug]/[...path]` — Authenticated content serving (stream from S3 after auth check)
+Pages (App Router):
+- `/` — landing / sign-in (redirects to `/dashboard` when authed)
+- `/login` — branded login wall; wired as Auth.js `pages.signIn`, so gated `/s/*` viewers land here with `callbackUrl` preserved
+- `/dashboard` — site list (grid/list toggle, search, live TTL countdowns, copy/extend/delete)
+- `/upload` — "Publish a page": dropzone + config (slug, TTL, viewer allowlist chips) + summary panel
+- `/settings` — profile + configured sign-in providers + sign out
+
+API / handlers:
+- `/s/[slug]/[[...path]]` — auth-gated content serving (verify session + allowlist, then stream from S3)
 - `/api/upload` — POST: accept HTML file, store to S3, write metadata to Postgres
-- `/api/cleanup` — GET/POST: cron-callable; deletes expired sites from S3 + soft-deletes in DB
-- `/dashboard` — Authenticated UI: list sites, copy link, extend TTL, delete
+- `/api/sites/[id]` — DELETE (owner delete) · PATCH (owner extend TTL: resets `expires_at` from now)
+- `/api/cleanup` — GET/POST, `Authorization: Bearer $CRON_SECRET`: deletes expired sites from S3 + soft-deletes in DB
+
+## Front-end / design system
+
+Ported from the "MicroBuild" Claude Design project. Do not hand-edit tokens ad hoc — keep them centralized:
+- **Design tokens** live in `app/globals.css` as CSS custom properties. Dark is the default theme; `[data-theme="light"]` on `<html>` swaps the palette. A no-FOUC inline script in `app/layout.tsx` applies the persisted theme (`localStorage` key `mb-theme`) before paint; `components/ThemeToggle.tsx` flips it.
+- **Fonts** via `next/font/google` (Hanken Grotesk UI, JetBrains Mono) exposed as `--font-ui` / `--font-mono`.
+- **Icons** via `lucide-react` (not the mockup's CDN `<script>`).
+- Reusable class primitives (`.btn`, `.card`, `.field`, `.seg`, `.icon-btn`) are in `globals.css`; components layer inline styles for layout on top, referencing the token vars.
+- `components/AppBar.tsx` is the shared top bar (real storage meter + site count from `lib/plan.ts` limits).
 
 ## Data Model (core tables)
 
-- `sites` — slug, owner_id, s3_key_prefix, ttl_preset, expires_at, deleted_at, visibility
+- `sites` — slug, owner_email, s3_prefix, index_key, content_type, size_bytes, ttl_preset, expires_at, created_at, deleted_at
 - `site_viewers` — site_id, viewer_email (the allowlist)
-- `users` — id, email, provider, created_at
+
+Auth uses JWT sessions (no DB adapter), so there is no `users` table — the allowlist is matched against the session email.
 
 ## MVP Scope
 

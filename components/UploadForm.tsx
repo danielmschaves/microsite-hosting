@@ -1,23 +1,54 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import {
+  ArrowLeft,
+  UploadCloud,
+  FileCode2,
+  X,
+  Wand2,
+  Clock,
+  Mail,
+  Shield,
+  Lock,
+  Users,
+  Timer,
+  Rocket,
+  Check,
+  Copy,
+  Link2,
+} from "lucide-react";
+
+const TTL_LABEL: Record<string, string> = {
+  "24h": "24 hours",
+  "7d": "7 days",
+  "30d": "30 days",
+};
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 export function UploadForm() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const [host, setHost] = useState("/s/");
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [ttl, setTtl] = useState("7d");
   const [slug, setSlug] = useState("");
-  const [viewers, setViewers] = useState("");
+  const [ttl, setTtl] = useState<"24h" | "7d" | "30d">("7d");
+  const [chips, setChips] = useState<string[]>([]);
+  const [chipInput, setChipInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ url: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [published, setPublished] = useState<{ slug: string; url: string } | null>(null);
+
+  useEffect(() => {
+    setHost(`${window.location.host}/s/`);
+  }, []);
 
   function pickFile(f: File | null) {
     setError(null);
-    setResult(null);
     if (!f) return;
     if (!f.name.toLowerCase().endsWith(".html") && f.type !== "text/html") {
       setError("Only .html files are accepted.");
@@ -26,32 +57,51 @@ export function UploadForm() {
     setFile(f);
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  function commitChip() {
+    const v = chipInput.trim().toLowerCase();
+    if (!v) return;
+    if (!EMAIL_RE.test(v)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    if (!chips.includes(v)) setChips((c) => [...c, v]);
+    setChipInput("");
+    setError(null);
+  }
+
+  function onChipKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter" || e.key === "," || e.key === " ") {
+      e.preventDefault();
+      commitChip();
+    } else if (e.key === "Backspace" && !chipInput && chips.length) {
+      setChips((c) => c.slice(0, -1));
+    }
+  }
+
+  async function publish() {
     if (!file) {
       setError("Choose an HTML file first.");
       return;
     }
     setBusy(true);
     setError(null);
-    setResult(null);
     try {
       const body = new FormData();
       body.set("file", file);
       body.set("ttl", ttl);
       if (slug.trim()) body.set("slug", slug.trim());
-      if (viewers.trim()) body.set("viewers", viewers.trim());
+      const viewers = [...chips];
+      if (chipInput.trim() && EMAIL_RE.test(chipInput.trim().toLowerCase())) {
+        viewers.push(chipInput.trim().toLowerCase());
+      }
+      if (viewers.length) body.set("viewers", viewers.join(","));
 
       const res = await fetch("/api/upload", { method: "POST", body });
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || "Upload failed.");
       } else {
-        setResult({ url: data.url });
-        setFile(null);
-        setSlug("");
-        setViewers("");
-        if (inputRef.current) inputRef.current.value = "";
+        setPublished({ slug: data.slug, url: data.url });
         router.refresh();
       }
     } catch {
@@ -61,86 +111,316 @@ export function UploadForm() {
     }
   }
 
+  function reset() {
+    setPublished(null);
+    setFile(null);
+    setSlug("");
+    setChips([]);
+    setChipInput("");
+    setTtl("7d");
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
+  const viewerLabel =
+    chips.length === 0 ? "Only me" : chips.length === 1 ? "1 viewer" : `${chips.length} viewers`;
+
   return (
-    <form onSubmit={submit}>
-      <div
-        className={
-          "dropzone" +
-          (dragging ? " drag" : "") +
-          (file ? " has-file" : "")
-        }
-        onClick={() => inputRef.current?.click()}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragging(false);
-          pickFile(e.dataTransfer.files?.[0] ?? null);
-        }}
-      >
-        {file ? (
-          <>
-            <strong>{file.name}</strong>
-            <div className="sub">{(file.size / 1024).toFixed(1)} KB</div>
-          </>
-        ) : (
-          <>Drag an .html file here, or click to browse</>
-        )}
+    <div style={{ maxWidth: 960, margin: "0 auto", padding: "34px 30px 100px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+        <Link href="/dashboard" className="btn btn-ghost" style={{ padding: "5px 9px", font: "600 12px/1 var(--font-ui)" }}>
+          <ArrowLeft size={14} />
+          Sites
+        </Link>
       </div>
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".html,text/html"
-        style={{ display: "none" }}
-        onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
-      />
+      <h1 style={{ margin: "0 0 26px", font: "800 26px/1 var(--font-ui)", letterSpacing: "-.02em", color: "var(--text)" }}>
+        Publish a page
+      </h1>
 
-      <div className="row">
-        <div style={{ flex: "none", width: "100%", maxWidth: 200 }}>
-          <label>Expires after</label>
-          <select value={ttl} onChange={(e) => setTtl(e.target.value)}>
-            <option value="24h">24 hours</option>
-            <option value="7d">7 days</option>
-            <option value="30d">30 days</option>
-          </select>
-        </div>
-        <div>
-          <label>Custom slug (optional)</label>
-          <input
-            type="text"
-            placeholder="auto-generated if blank"
-            value={slug}
-            onChange={(e) => setSlug(e.target.value)}
-          />
-        </div>
-      </div>
+      {published ? (
+        <PublishedCard
+          published={published}
+          ttl={ttl}
+          viewerLabel={viewerLabel}
+          onReset={reset}
+        />
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 20, alignItems: "start" }}>
+          {/* left column */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            {!file ? (
+              <div
+                onClick={() => inputRef.current?.click()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragging(true);
+                }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragging(false);
+                  pickFile(e.dataTransfer.files?.[0] ?? null);
+                }}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 12,
+                  padding: "44px 20px",
+                  borderRadius: "var(--r-lg)",
+                  border: `1.5px dashed ${dragging ? "var(--accent)" : "var(--border-strong)"}`,
+                  background: dragging ? "var(--accent-soft)" : "var(--surface-1)",
+                  cursor: "pointer",
+                  textAlign: "center",
+                  transition: "border-color .15s, background .15s",
+                }}
+              >
+                <div style={{ width: 52, height: 52, borderRadius: 14, background: "var(--surface-3)", display: "grid", placeItems: "center", color: "var(--text-muted)" }}>
+                  <UploadCloud size={26} />
+                </div>
+                <div style={{ font: "700 15px/1.3 var(--font-ui)", color: "var(--text)" }}>Drop your HTML file here</div>
+                <div className="mb-mono" style={{ font: "500 12px/1.4 var(--font-mono)", color: "var(--text-subtle)" }}>
+                  single self-contained .html · up to 25&nbsp;MB · click to browse
+                </div>
+              </div>
+            ) : (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 14,
+                  padding: "16px 18px",
+                  borderRadius: "var(--r-lg)",
+                  border: "1.5px solid var(--success-border)",
+                  background: "var(--success-soft)",
+                }}
+              >
+                <div style={{ width: 44, height: 44, borderRadius: 11, background: "var(--surface-1)", border: "1px solid var(--border)", display: "grid", placeItems: "center", color: "var(--success)", flex: "none" }}>
+                  <FileCode2 size={22} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ font: "700 14px/1.2 var(--font-ui)", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {file.name}
+                  </div>
+                  <div className="mb-mono" style={{ font: "500 11.5px/1 var(--font-mono)", color: "var(--text-muted)", marginTop: 4 }}>
+                    {(file.size / 1024).toFixed(1)} KB · ready to publish
+                  </div>
+                </div>
+                <button onClick={() => setFile(null)} aria-label="Remove" className="icon-btn" style={{ width: 32, height: 32, background: "var(--surface-1)" }}>
+                  <X size={15} />
+                </button>
+              </div>
+            )}
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".html,text/html"
+              style={{ display: "none" }}
+              onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+            />
 
-      <label>Allowed viewer emails (optional, comma-separated)</label>
-      <input
-        type="text"
-        placeholder="teammate@example.com, other@example.com"
-        value={viewers}
-        onChange={(e) => setViewers(e.target.value)}
-      />
+            {/* config card */}
+            <div className="card" style={{ padding: "22px 24px" }}>
+              <div style={{ marginBottom: 18 }}>
+                <label className="lbl">Site URL</label>
+                <div className="focus-ring" style={{ display: "flex", alignItems: "stretch", borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border-strong)", overflow: "hidden" }}>
+                  <span
+                    className="mb-mono"
+                    style={{ display: "flex", alignItems: "center", padding: "0 12px", font: "500 13px/1 var(--font-mono)", color: "var(--text-subtle)", background: "color-mix(in srgb, var(--surface-3) 60%, transparent)", borderRight: "1px solid var(--border)" }}
+                  >
+                    {host}
+                  </span>
+                  <input
+                    value={slug}
+                    onChange={(e) => setSlug(e.target.value)}
+                    placeholder="auto-generated if blank"
+                    className="mb-mono"
+                    style={{ flex: 1, minWidth: 0, padding: "11px 12px", border: "none", background: "transparent", color: "var(--text)", font: "500 13.5px/1 var(--font-mono)", outline: "none" }}
+                  />
+                </div>
+                <div className="hint">
+                  <Wand2 size={12} />
+                  Human-readable slug · lowercase, numbers &amp; dashes
+                </div>
+              </div>
 
-      <div style={{ marginTop: 16 }}>
-        <button className="btn" type="submit" disabled={busy || !file}>
-          {busy ? "Uploading…" : "Upload & get link"}
-        </button>
-      </div>
+              <div style={{ marginBottom: 18 }}>
+                <label className="lbl">Expires after</label>
+                <div className="seg-group">
+                  {(["24h", "7d", "30d"] as const).map((k) => (
+                    <button key={k} className={`seg${ttl === k ? " active" : ""}`} onClick={() => setTtl(k)}>
+                      <Clock size={14} />
+                      {TTL_LABEL[k]}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-      {error && <div className="notice err">{error}</div>}
-      {result && (
-        <div className="notice ok">
-          Live at{" "}
-          <a href={result.url} target="_blank" rel="noreferrer">
-            {result.url}
-          </a>
+              <div>
+                <label className="lbl">Allowed viewers</label>
+                <div className="focus-ring" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: 10, borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border-strong)" }}>
+                  {chips.map((chip, i) => (
+                    <span key={chip} style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 8px 5px 11px", borderRadius: 999, background: "var(--accent-soft)", border: "1px solid var(--accent-border)", color: "var(--text)", font: "500 12.5px/1 var(--font-ui)" }}>
+                      <Mail size={12} style={{ color: "var(--accent)" }} />
+                      {chip}
+                      <button
+                        onClick={() => setChips((c) => c.filter((_, j) => j !== i))}
+                        aria-label="remove"
+                        style={{ display: "grid", placeItems: "center", width: 16, height: 16, borderRadius: 999, border: "none", background: "transparent", color: "var(--text-muted)", cursor: "pointer" }}
+                      >
+                        <X size={11} />
+                      </button>
+                    </span>
+                  ))}
+                  <input
+                    value={chipInput}
+                    onChange={(e) => setChipInput(e.target.value)}
+                    onKeyDown={onChipKey}
+                    onBlur={commitChip}
+                    placeholder="name@company.com"
+                    style={{ flex: 1, minWidth: 150, padding: "6px 4px", border: "none", background: "transparent", color: "var(--text)", font: "500 13.5px/1 var(--font-ui)", outline: "none" }}
+                  />
+                </div>
+                <div className="hint">
+                  <Shield size={12} />
+                  Leave empty to keep it visible to you only. Allowlist is enforced server-side.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* summary panel */}
+          <div className="card" style={{ position: "sticky", top: 88, padding: "22px 24px", boxShadow: "var(--shadow-1)" }}>
+            <div style={{ font: "600 10.5px/1 var(--font-mono)", letterSpacing: ".12em", textTransform: "uppercase", color: "var(--text-subtle)", marginBottom: 16 }}>
+              Before you publish
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 13, marginBottom: 20 }}>
+              <SummaryRow icon={<Lock size={15} />} tint="accent" title="Private by default" sub="SSO required to view" />
+              <SummaryRow icon={<Shield size={15} />} tint="success" title="Never publicly readable" sub="Access checked server-side" />
+              <SummaryRow icon={<Timer size={15} />} tint="warning" title={`Self-destructs in ${TTL_LABEL[ttl]}`} sub="Won't outlive its purpose" />
+            </div>
+            <button onClick={publish} disabled={busy || !file} className="btn btn-primary" style={{ width: "100%", padding: "12px 16px", font: "700 14px/1 var(--font-ui)" }}>
+              <Rocket size={16} />
+              {busy ? "Publishing…" : "Publish private site"}
+            </button>
+            {error && (
+              <div style={{ marginTop: 12, padding: "9px 11px", borderRadius: "var(--r-md)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)", color: "var(--text)", font: "500 12px/1.4 var(--font-ui)" }}>
+                {error}
+              </div>
+            )}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 12, font: "500 10.5px/1.3 var(--font-mono)", color: "var(--text-subtle)" }}>
+              <Users size={11} />
+              Shared only with people you allowlist
+            </div>
+          </div>
         </div>
       )}
-    </form>
+    </div>
+  );
+}
+
+function SummaryRow({
+  icon,
+  tint,
+  title,
+  sub,
+}: {
+  icon: React.ReactNode;
+  tint: "accent" | "success" | "warning";
+  title: string;
+  sub: string;
+}) {
+  const color = `var(--${tint})`;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+      <div style={{ width: 32, height: 32, borderRadius: 9, background: `var(--${tint}-soft)`, display: "grid", placeItems: "center", color, flex: "none" }}>
+        {icon}
+      </div>
+      <div>
+        <div style={{ font: "600 12.5px/1.2 var(--font-ui)", color: "var(--text)" }}>{title}</div>
+        <div style={{ font: "400 11.5px/1.3 var(--font-ui)", color: "var(--text-muted)", marginTop: 2 }}>{sub}</div>
+      </div>
+    </div>
+  );
+}
+
+function PublishedCard({
+  published,
+  ttl,
+  viewerLabel,
+  onReset,
+}: {
+  published: { slug: string; url: string };
+  ttl: string;
+  viewerLabel: string;
+  onReset: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(published.url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  }
+  return (
+    <div className="card" style={{ maxWidth: 560, margin: "0 auto", textAlign: "center", padding: "38px 34px", boxShadow: "var(--shadow-2)" }}>
+      <div style={{ width: 58, height: 58, margin: "0 auto 18px", borderRadius: 15, background: "var(--success-soft)", border: "1px solid var(--success-border)", display: "grid", placeItems: "center", color: "var(--success)" }}>
+        <Check size={30} />
+      </div>
+      <h2 style={{ margin: "0 0 8px", font: "800 21px/1.15 var(--font-ui)", letterSpacing: "-.02em", color: "var(--text)" }}>
+        Your site is live &amp; private
+      </h2>
+      <p style={{ margin: "0 0 22px", font: "400 13.5px/1.5 var(--font-ui)", color: "var(--text-muted)" }}>
+        Only allowlisted viewers can open it after signing in.
+      </p>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 12px", borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border-strong)", marginBottom: 16 }}>
+        <Link2 size={14} style={{ color: "var(--accent)", flex: "none" }} />
+        <span className="mb-mono" style={{ flex: 1, textAlign: "left", font: "500 13px/1 var(--font-mono)", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {published.url}
+        </span>
+        <button onClick={copy} className="btn btn-primary" style={{ padding: "7px 12px", font: "600 12px/1 var(--font-ui)", flex: "none" }}>
+          <Copy size={13} />
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 7, justifyContent: "center", marginBottom: 24 }}>
+        <Pill icon={<Lock size={11} style={{ color: "var(--accent)" }} />} bg="var(--accent-soft)" bd="var(--accent-border)" text="Private" />
+        <Pill icon={<Users size={11} />} bg="var(--surface-3)" bd="var(--border-strong)" text={viewerLabel} muted />
+        <Pill icon={<Timer size={11} style={{ color: "var(--warning)" }} />} bg="var(--warning-soft)" bd="var(--warning-border)" text={TTL_LABEL[ttl] || ttl} />
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+        <button onClick={onReset} className="btn btn-neutral">
+          <UploadCloud size={14} />
+          Upload another
+        </button>
+        <Link href="/dashboard" className="btn btn-primary">
+          Go to dashboard
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function Pill({
+  icon,
+  bg,
+  bd,
+  text,
+  muted,
+}: {
+  icon: React.ReactNode;
+  bg: string;
+  bd: string;
+  text: string;
+  muted?: boolean;
+}) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 11px", borderRadius: 999, background: bg, border: `1px solid ${bd}`, color: muted ? "var(--text-muted)" : "var(--text)", font: "600 11px/1 var(--font-ui)", whiteSpace: "nowrap" }}>
+      {icon}
+      {text}
+    </span>
   );
 }

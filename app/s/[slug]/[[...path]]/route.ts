@@ -18,9 +18,9 @@ export async function GET(
   const email = session?.user?.email;
   if (!email) {
     const callbackUrl = new URL(req.url).pathname;
-    const signInUrl = new URL("/api/auth/signin", req.url);
-    signInUrl.searchParams.set("callbackUrl", callbackUrl);
-    return NextResponse.redirect(signInUrl);
+    const loginUrl = new URL("/login", req.url);
+    loginUrl.searchParams.set("callbackUrl", callbackUrl);
+    return NextResponse.redirect(loginUrl);
   }
 
   // 2. Look up a live (non-deleted, non-expired) site.
