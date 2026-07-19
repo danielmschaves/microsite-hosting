@@ -45,6 +45,9 @@ services:
     environment:
       AUTH_SECRET: ${AUTH_SECRET:-dev-insecure-secret-change-me}
       AUTH_TRUST_HOST: "true"
+      # Dev-only email login so you can sign in without OAuth apps. Set to
+      # "false" (or remove) to require real Google/GitHub sign-in.
+      AUTH_DEV_LOGIN: ${AUTH_DEV_LOGIN:-true}
       AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:-}
       AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:-}
       AUTH_GITHUB_ID: ${AUTH_GITHUB_ID:-}

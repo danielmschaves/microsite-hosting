@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { ShieldCheck, LockKeyhole, EyeOff, Timer, Users } from "lucide-react";
 import { auth, enabledProviders } from "@/auth";
-import { ProviderSignIn } from "@/components/AuthButtons";
+import { ProviderSignIn, DevSignIn } from "@/components/AuthButtons";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
 export const dynamic = "force-dynamic";
@@ -101,7 +101,17 @@ export default async function Home() {
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {enabledProviders.google && <ProviderSignIn provider="google" />}
             {enabledProviders.github && <ProviderSignIn provider="github" />}
-            {!enabledProviders.google && !enabledProviders.github && (
+            {enabledProviders.dev && (
+              <>
+                {(enabledProviders.google || enabledProviders.github) && (
+                  <div style={{ font: "600 10px/1 var(--font-mono)", letterSpacing: ".1em", textTransform: "uppercase", color: "var(--text-subtle)", margin: "4px 0" }}>
+                    Dev login · local only
+                  </div>
+                )}
+                <DevSignIn />
+              </>
+            )}
+            {!enabledProviders.google && !enabledProviders.github && !enabledProviders.dev && (
               <div
                 style={{
                   padding: "10px 12px",
@@ -112,8 +122,8 @@ export default async function Home() {
                   font: "500 12.5px/1.5 var(--font-ui)",
                 }}
               >
-                No OAuth providers configured. Set AUTH_GOOGLE_ID / AUTH_GITHUB_ID
-                (and secrets) in your environment.
+                No sign-in methods configured. Set AUTH_DEV_LOGIN=true for local
+                testing, or add AUTH_GOOGLE_ID / AUTH_GITHUB_ID (and secrets).
               </div>
             )}
           </div>

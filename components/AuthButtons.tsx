@@ -79,6 +79,32 @@ export function ProviderSignIn({
   );
 }
 
+/** Dev-only email sign-in form (enabled via AUTH_DEV_LOGIN=true). */
+export function DevSignIn({ callbackUrl = "/dashboard" }: { callbackUrl?: string }) {
+  return (
+    <form
+      action={async (formData: FormData) => {
+        "use server";
+        const email = String(formData.get("email") || "");
+        await signIn("dev", { email, redirectTo: callbackUrl });
+      }}
+      style={{ display: "flex", flexDirection: "column", gap: 8 }}
+    >
+      <input
+        name="email"
+        type="email"
+        required
+        placeholder="you@example.com"
+        className="field"
+        style={{ textAlign: "center" }}
+      />
+      <button type="submit" className="btn btn-neutral" style={{ width: "100%", padding: 12 }}>
+        Continue with email
+      </button>
+    </form>
+  );
+}
+
 export function SignOutButton({
   variant = "icon",
 }: {

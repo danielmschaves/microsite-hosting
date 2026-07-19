@@ -21,15 +21,32 @@ The schema and storage bucket are created automatically on server startup
 ## Run locally with Docker
 
 ```bash
-cp .env.example .env
-# Fill in AUTH_GOOGLE_ID / AUTH_GITHUB_ID (+ secrets) for sign-in to work.
 docker compose up --build
 ```
 
-Then open http://localhost:3000. MinIO console is at http://localhost:9001
-(`minioadmin` / `minioadmin`).
+Then open http://localhost:3000. No `.env` is required — the compose file ships
+working local defaults (Postgres, MinIO) and enables **dev login**. MinIO console
+is at http://localhost:9001 (`minioadmin` / `minioadmin`).
 
-### OAuth callback URLs
+### Dev login (no OAuth setup needed)
+
+`AUTH_DEV_LOGIN=true` (default in docker-compose) adds a "Continue with email"
+box on the sign-in screens. Type any email to sign in as that user — ideal for
+testing the viewer allowlist. **Never enable it in production.**
+
+Test the full loop:
+
+1. Sign in as `owner@test.com`, go to **New site**, drop any `.html`, add
+   `viewer@test.com` to *Allowed viewers*, pick a TTL, publish.
+2. Open the site link — it works for you (the owner).
+3. Sign out, sign in as `viewer@test.com`, open the link — works (allowlisted).
+4. Sign out, sign in as `stranger@test.com`, open the link — **403 Forbidden**.
+5. Back on the dashboard, try **Extend TTL** and **Delete**.
+
+### Real OAuth (optional, higher fidelity)
+
+Set the following and restart; the Google/GitHub buttons appear automatically.
+Callback URLs:
 
 - Google: `http://localhost:3000/api/auth/callback/google`
 - GitHub: `http://localhost:3000/api/auth/callback/github`

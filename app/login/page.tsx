@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { ShieldCheck, LockKeyhole, EyeOff, Link2 } from "lucide-react";
 import { auth, enabledProviders } from "@/auth";
-import { ProviderSignIn } from "@/components/AuthButtons";
+import { ProviderSignIn, DevSignIn } from "@/components/AuthButtons";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
 export const dynamic = "force-dynamic";
@@ -161,6 +161,16 @@ export default async function LoginWall({
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {enabledProviders.google && <ProviderSignIn provider="google" callbackUrl={callbackUrl} />}
             {enabledProviders.github && <ProviderSignIn provider="github" callbackUrl={callbackUrl} />}
+            {enabledProviders.dev && (
+              <>
+                {(enabledProviders.google || enabledProviders.github) && (
+                  <div style={{ font: "600 10px/1 var(--font-mono)", letterSpacing: ".1em", textTransform: "uppercase", color: "var(--text-subtle)", margin: "4px 0" }}>
+                    Dev login · local only
+                  </div>
+                )}
+                <DevSignIn callbackUrl={callbackUrl} />
+              </>
+            )}
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "20px 0" }}>
