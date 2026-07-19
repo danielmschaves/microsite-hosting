@@ -5,8 +5,11 @@ import Credentials from "next-auth/providers/credentials";
 
 // Dev-only email login: lets you sign in as any email without configuring OAuth
 // apps, so the auth-gated flows (upload, allowlist, serving) can be tested
-// locally. NEVER enable in production — it authenticates anyone.
-const devLogin = process.env.AUTH_DEV_LOGIN === "true";
+// locally. NEVER enable in production — it authenticates anyone. Hard-blocked
+// on Vercel production deployments as a safety net against a mistyped env var.
+const devLogin =
+  process.env.AUTH_DEV_LOGIN === "true" &&
+  process.env.VERCEL_ENV !== "production";
 
 // Only register providers whose credentials are present. This keeps the app
 // bootable locally even if you've only configured one of Google/GitHub.

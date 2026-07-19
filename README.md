@@ -4,8 +4,9 @@ Ephemeral, SSO-gated HTML hosting. An authenticated user uploads a single
 self-contained `.html` file, gets a private link served only to logged-in
 allowed viewers, and the site auto-deletes when its TTL expires.
 
-See [`PRD.md`](./PRD.md) for the product spec and [`CLAUDE.md`](./CLAUDE.md) for
-architecture notes.
+See [`PRD.md`](./PRD.md) for the product spec, [`CLAUDE.md`](./CLAUDE.md) for
+architecture notes, and [`DEPLOY.md`](./DEPLOY.md) for the production deploy
+runbook (Vercel first, then Google OAuth — in that order).
 
 ## Stack
 
