@@ -1,0 +1,36 @@
+import { NextResponse } from "next/server";
+import { auth } from "@/auth";
+import { query, type SiteRow } from "@/lib/db";
+import { deletePrefix } from "@/lib/storage";
+
+export const runtime = "nodejs";
+
+// Owner-initiated delete: removes stored objects and soft-deletes the row.
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  const session = await auth();
+  const email = session?.user?.email;
+  if (!email) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const rows = await query<SiteRow>(
+    "SELECT * FROM sites WHERE id = $1 AND deleted_at IS NULL",
+    [id],
+  );
+  const site = rows[0];
+  if (!site) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  if (site.owner_email.toLowerCase() !== email.toLowerCase()) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  await deletePrefix(site.s3_prefix);
+  await query("UPDATE sites SET deleted_at = now() WHERE id = $1", [id]);
+
+  return NextResponse.json({ ok: true });
+}
