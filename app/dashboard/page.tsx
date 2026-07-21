@@ -1,9 +1,10 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { query } from "@/lib/db";
-import { FREE_SITE_LIMIT, FREE_STORAGE_BYTES } from "@/lib/plan";
+import { statsForSites } from "@/lib/events";
+import { FREE_SITE_LIMIT, FREE_STORAGE_BYTES, TRASH_DAYS } from "@/lib/plan";
 import { AppBar } from "@/components/AppBar";
-import { SitesView, type SiteView } from "@/components/SitesView";
+import { SitesView, type SiteView, type TrashView } from "@/components/SitesView";
 
 export const dynamic = "force-dynamic";
 
@@ -11,9 +12,17 @@ interface DashboardRow {
   id: string;
   slug: string;
   size_bytes: string;
+  page_count: number;
   ttl_preset: string;
   expires_at: Date;
   viewer_count: string;
+}
+
+interface TrashRow {
+  id: string;
+  slug: string;
+  size_bytes: string;
+  deleted_at: Date;
 }
 
 export default async function Dashboard() {
@@ -22,7 +31,7 @@ export default async function Dashboard() {
   if (!email) redirect("/");
 
   const rows = await query<DashboardRow>(
-    `SELECT s.id, s.slug, s.size_bytes, s.ttl_preset, s.expires_at,
+    `SELECT s.id, s.slug, s.size_bytes, s.page_count, s.ttl_preset, s.expires_at,
             (SELECT count(*) FROM site_viewers v WHERE v.site_id = s.id) AS viewer_count
        FROM sites s
       WHERE s.owner_email = $1 AND s.deleted_at IS NULL
@@ -30,20 +39,43 @@ export default async function Dashboard() {
     [email],
   );
 
+  const trashRows = await query<TrashRow>(
+    `SELECT id, slug, size_bytes, deleted_at
+       FROM sites
+      WHERE owner_email = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL
+      ORDER BY deleted_at DESC`,
+    [email],
+  );
+
+  const stats = await statsForSites(rows.map((r) => r.id));
+
   const base = process.env.NEXT_PUBLIC_BASE_URL || "";
   const sites: SiteView[] = rows.map((r) => {
     const viewers = Number(r.viewer_count);
+    const s = stats.get(r.id);
     return {
       id: r.id,
       slug: r.slug,
       url: `${base}/s/${r.slug}`,
       sizeBytes: Number(r.size_bytes),
+      pageCount: Number(r.page_count),
       ttlPreset: r.ttl_preset,
       expiresAt: new Date(r.expires_at).toISOString(),
       viewersLabel:
         viewers === 0 ? "Only me" : viewers === 1 ? "1 viewer" : `${viewers} viewers`,
+      views: s?.views ?? 0,
+      lastViewedAt: s?.lastViewedAt ?? null,
     };
   });
+
+  const trash: TrashView[] = trashRows.map((r) => ({
+    id: r.id,
+    slug: r.slug,
+    sizeBytes: Number(r.size_bytes),
+    purgeAt: new Date(
+      new Date(r.deleted_at).getTime() + TRASH_DAYS * 24 * 3600 * 1000,
+    ).toISOString(),
+  }));
 
   const usedBytes = sites.reduce((sum, s) => sum + s.sizeBytes, 0);
 
@@ -58,7 +90,7 @@ export default async function Dashboard() {
         siteLimit={FREE_SITE_LIMIT}
         storageLimitBytes={FREE_STORAGE_BYTES}
       />
-      <SitesView sites={sites} />
+      <SitesView sites={sites} trash={trash} />
     </>
   );
 }

@@ -87,6 +87,34 @@ export async function getObject(key: string): Promise<FetchedObject | null> {
   }
 }
 
+export interface StoredFile {
+  name: string;
+  size: number;
+}
+
+/** List files stored under a site prefix (names relative to the prefix). */
+export async function listPrefix(prefix: string): Promise<StoredFile[]> {
+  const files: StoredFile[] = [];
+  let continuationToken: string | undefined;
+  do {
+    const listed = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: BUCKET,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    for (const obj of listed.Contents || []) {
+      if (!obj.Key) continue;
+      files.push({ name: obj.Key.slice(prefix.length), size: obj.Size || 0 });
+    }
+    continuationToken = listed.IsTruncated
+      ? listed.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+  return files.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** Delete every object under a site prefix. */
 export async function deletePrefix(prefix: string): Promise<void> {
   let continuationToken: string | undefined;

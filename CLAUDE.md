@@ -51,11 +51,14 @@ Pages (App Router):
 - `/upload` — "Publish a page": dropzone + config (slug, TTL, viewer allowlist chips) + summary panel
 - `/settings` — profile + configured sign-in providers + sign out
 
+- `/sites/[id]` — owner-only manage panel: stats, TTL, slug rename, viewer allowlist CRUD, pages list, trash/restore/purge
+
 API / handlers:
-- `/s/[slug]/[[...path]]` — auth-gated content serving (verify session + allowlist, then stream from S3)
-- `/api/upload` — POST: accept HTML file, store to S3, write metadata to Postgres
-- `/api/sites/[id]` — DELETE (owner delete) · PATCH (owner extend TTL: resets `expires_at` from now)
-- `/api/cleanup` — GET/POST, `Authorization: Bearer $CRON_SECRET`: deletes expired sites from S3 + soft-deletes in DB
+- `/s/[slug]/[[...path]]` — auth-gated content serving (verify session + allowlist, then stream from S3); records a `site_view` event
+- `/api/upload` — POST: accepts 1–20 `.html` files (multi-page; `index` field or auto-detected `index.html`), stores under a slug-decoupled S3 prefix (`sites/{slug}-{ts}/`), writes metadata to Postgres
+- `/api/sites/[id]` — DELETE (move to trash; `?permanent=true` purges storage) · PATCH (`{ttl}` extend, `{slug}` rename — metadata-only, prefix never moves, `{action:"restore"}` un-trash)
+- `/api/sites/[id]/viewers` — GET/POST/DELETE: allowlist CRUD, effective immediately
+- `/api/cleanup` — GET/POST, `Authorization: Bearer $CRON_SECRET`: phase 1 trashes expired sites (storage kept); phase 2 purges storage for sites trashed > 7 days (`TRASH_DAYS` in `lib/plan.ts`)
 
 ## Front-end / design system
 
@@ -68,8 +71,11 @@ Ported from the "MicroBuild" Claude Design project. Do not hand-edit tokens ad h
 
 ## Data Model (core tables)
 
-- `sites` — slug, owner_email, s3_prefix, index_key, content_type, size_bytes, ttl_preset, expires_at, created_at, deleted_at
+- `sites` — slug, owner_email, s3_prefix, index_key, size_bytes, page_count, ttl_preset, expires_at, deleted_at (= in trash), purged_at (= storage gone, unrestorable)
 - `site_viewers` — site_id, viewer_email (the allowlist)
+- `events` — first-party analytics (type, site_id, actor, meta jsonb); captured server-side via `lib/events.ts` `track()`; no third-party SDK
+
+Lifecycle: live (`deleted_at IS NULL`, unexpired) → trash (`deleted_at` set, storage kept, restorable) → purged (`purged_at` set after `TRASH_DAYS`). Serving requires live. The S3 prefix embeds a timestamp so trashed sites never collide with a new site reusing the slug.
 
 Auth uses JWT sessions (no DB adapter), so there is no `users` table — the allowlist is matched against the session email.
 
