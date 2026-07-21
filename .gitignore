@@ -15,6 +15,10 @@ next-env.d.ts
 # Local Claude Code settings
 .claude/
 
+# Local-only helper files (never commit)
+iam-policy.json
+secrets.local.txt
+
 # OS
 .DS_Store
 Thumbs.db
