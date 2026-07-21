@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { query, type SiteRow } from "@/lib/db";
 import { getObject } from "@/lib/storage";
+import { track } from "@/lib/events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -57,6 +58,13 @@ export async function GET(
   if (!object) {
     return new NextResponse("Not found", { status: 404 });
   }
+
+  // First-party analytics: record the page view (never blocks serving).
+  await track("site_view", {
+    siteId: site.id,
+    actor: lower,
+    meta: { path: subPath || "index", owner: isOwner },
+  });
 
   // 5. Serve with a sandboxing content-security policy. Self-contained pages
   //    (inline styles/scripts, embedded/data images) render; cross-origin

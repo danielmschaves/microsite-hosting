@@ -18,8 +18,11 @@ import {
   Link2,
   Users,
   UploadCloud,
-  X,
   Check,
+  Eye,
+  FileCode2,
+  Settings2,
+  ArchiveRestore,
 } from "lucide-react";
 
 export interface SiteView {
@@ -27,9 +30,19 @@ export interface SiteView {
   slug: string;
   url: string;
   sizeBytes: number;
+  pageCount: number;
   ttlPreset: string;
   expiresAt: string;
   viewersLabel: string;
+  views: number;
+  lastViewedAt: string | null;
+}
+
+export interface TrashView {
+  id: string;
+  slug: string;
+  sizeBytes: number;
+  purgeAt: string;
 }
 
 type State = "fresh" | "expiring" | "expired";
@@ -70,7 +83,13 @@ const CD_CONF: Record<State, { color: string; Icon: typeof Clock }> = {
   expired: { color: "var(--danger)", Icon: Ban },
 };
 
-export function SitesView({ sites }: { sites: SiteView[] }) {
+export function SitesView({
+  sites,
+  trash,
+}: {
+  sites: SiteView[];
+  trash: TrashView[];
+}) {
   const router = useRouter();
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [view, setView] = useState<"grid" | "list">("grid");
@@ -135,7 +154,7 @@ export function SitesView({ sites }: { sites: SiteView[] }) {
             Your sites
           </h1>
           <p style={{ margin: 0, font: "400 13.5px/1 var(--font-ui)", color: "var(--text-muted)" }}>
-            {sites.length} active · private by default · auto-expiring
+            {sites.length} active · {sites.reduce((s, x) => s + x.views, 0)} total views · private by default
           </p>
         </div>
         <Link href="/upload" className="btn btn-primary">
@@ -211,6 +230,10 @@ export function SitesView({ sites }: { sites: SiteView[] }) {
             </div>
           )}
         </>
+      )}
+
+      {trash.length > 0 && (
+        <TrashSection trash={trash} nowMs={nowMs} onChanged={() => router.refresh()} />
       )}
 
       {toast && <Toast message={toast} />}
@@ -330,6 +353,16 @@ function Badges({ site }: { site: SiteView }) {
         <Timer size={11} />
         {TTL_LABEL[site.ttlPreset] || site.ttlPreset}
       </span>
+      {site.pageCount > 1 && (
+        <span style={pill("var(--surface-3)", "var(--border-strong)", "var(--text-muted)")}>
+          <FileCode2 size={11} />
+          {site.pageCount} pages
+        </span>
+      )}
+      <span style={pill("var(--surface-3)", "var(--border-strong)", "var(--text-muted)")}>
+        <Eye size={11} />
+        {site.views} view{site.views === 1 ? "" : "s"}
+      </span>
     </>
   );
 }
@@ -444,10 +477,13 @@ function SiteCard({
             <Copy size={13} />
             Copy link
           </button>
+          <Link href={`/sites/${site.id}`} className="icon-btn" aria-label="Manage site">
+            <Settings2 size={15} />
+          </Link>
           <button onClick={onExtend} className="icon-btn" aria-label="Extend TTL">
             <TimerReset size={15} />
           </button>
-          <button onClick={onDelete} className="icon-btn danger" aria-label="Delete">
+          <button onClick={onDelete} className="icon-btn danger" aria-label="Move to trash">
             <Trash2 size={15} />
           </button>
         </div>
@@ -519,10 +555,13 @@ function SiteRow({
         <button onClick={onCopy} className="icon-btn" aria-label="Copy link" style={{ width: 32, height: 32, background: "transparent" }}>
           <Copy size={14} />
         </button>
+        <Link href={`/sites/${site.id}`} className="icon-btn" aria-label="Manage" style={{ width: 32, height: 32, background: "transparent" }}>
+          <Settings2 size={14} />
+        </Link>
         <button onClick={onExtend} className="icon-btn" aria-label="Extend" style={{ width: 32, height: 32, background: "transparent" }}>
           <TimerReset size={14} />
         </button>
-        <button onClick={onDelete} className="icon-btn danger" aria-label="Delete" style={{ width: 32, height: 32, background: "transparent" }}>
+        <button onClick={onDelete} className="icon-btn danger" aria-label="Move to trash" style={{ width: 32, height: 32, background: "transparent" }}>
           <Trash2 size={14} />
         </button>
       </div>
@@ -571,6 +610,115 @@ function EmptyState() {
         <UploadCloud size={16} />
         Upload your first site
       </Link>
+    </div>
+  );
+}
+
+function TrashSection({
+  trash,
+  nowMs,
+  onChanged,
+}: {
+  trash: TrashView[];
+  nowMs: number;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function restore(t: TrashView) {
+    setBusy(t.id);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/sites/${t.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "restore" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) setErr(data.error || "Restore failed.");
+      else onChanged();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function purge(t: TrashView) {
+    if (!confirm(`Permanently delete "${t.slug}"? This cannot be undone.`)) return;
+    setBusy(t.id);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/sites/${t.id}?permanent=true`, { method: "DELETE" });
+      if (!res.ok) setErr("Delete failed.");
+      else onChanged();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 34 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <Trash2 size={15} style={{ color: "var(--text-subtle)" }} />
+        <h2 style={{ margin: 0, font: "700 15px/1 var(--font-ui)", color: "var(--text-muted)" }}>
+          Trash ({trash.length})
+        </h2>
+      </div>
+      {err && (
+        <div style={{ marginBottom: 12, padding: "9px 12px", borderRadius: "var(--r-md)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)", color: "var(--text)", font: "500 12.5px/1.4 var(--font-ui)" }}>
+          {err}
+        </div>
+      )}
+      <div className="card" style={{ overflow: "hidden", opacity: 0.9 }}>
+        {trash.map((t, i) => {
+          const daysLeft = Math.max(
+            0,
+            Math.ceil((new Date(t.purgeAt).getTime() - nowMs) / (24 * 3600 * 1000)),
+          );
+          return (
+            <div
+              key={t.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+                padding: "12px 16px",
+                borderTop: i === 0 ? "none" : "1px solid var(--border)",
+              }}
+            >
+              <div
+                style={{
+                  width: 52,
+                  height: 38,
+                  borderRadius: 8,
+                  flex: "none",
+                  backgroundImage:
+                    "repeating-linear-gradient(135deg, var(--surface-3) 0 6px, var(--surface-2) 6px 12px)",
+                  border: "1px solid var(--border)",
+                  opacity: 0.5,
+                  filter: "grayscale(.6)",
+                }}
+              />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ font: "700 13.5px/1.1 var(--font-ui)", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {t.slug}
+                </div>
+                <div className="mb-mono" style={{ font: "500 11px/1 var(--font-mono)", color: "var(--text-subtle)", marginTop: 4 }}>
+                  {sizeLabel(t.sizeBytes)} · permanently deleted in {daysLeft}d
+                </div>
+              </div>
+              <button onClick={() => restore(t)} disabled={busy !== null} className="btn btn-neutral" style={{ padding: "8px 13px", font: "600 12.5px/1 var(--font-ui)" }}>
+                <ArchiveRestore size={14} />
+                {busy === t.id ? "Working…" : "Restore"}
+              </button>
+              <button onClick={() => purge(t)} disabled={busy !== null} className="btn btn-danger" style={{ padding: "8px 13px", font: "600 12.5px/1 var(--font-ui)" }}>
+                <Trash2 size={14} />
+                Delete forever
+              </button>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -680,13 +828,14 @@ function DeleteModal({
           <Trash2 size={19} />
         </div>
         <div>
-          <div style={{ font: "800 17px/1.15 var(--font-ui)", letterSpacing: "-.02em", color: "var(--text)" }}>Delete site</div>
-          <div style={{ font: "400 12.5px/1 var(--font-ui)", color: "var(--text-muted)", marginTop: 4 }}>This can&apos;t be undone.</div>
+          <div style={{ font: "800 17px/1.15 var(--font-ui)", letterSpacing: "-.02em", color: "var(--text)" }}>Move to trash</div>
+          <div style={{ font: "400 12.5px/1 var(--font-ui)", color: "var(--text-muted)", marginTop: 4 }}>Restorable for 7 days.</div>
         </div>
       </div>
       <p style={{ margin: "0 0 18px", font: "400 13.5px/1.5 var(--font-ui)", color: "var(--text-muted)" }}>
-        <span className="mb-mono" style={{ color: "var(--text)" }}>/s/{site.slug}</span> will be
-        removed from storage and stop resolving immediately.
+        <span className="mb-mono" style={{ color: "var(--text)" }}>/s/{site.slug}</span> stops
+        being served immediately. You can restore it from the trash below for 7
+        days, after which it is permanently deleted.
       </p>
       {err && <div style={{ marginBottom: 14, color: "var(--danger)", font: "500 12.5px/1.4 var(--font-ui)" }}>{err}</div>}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
@@ -695,7 +844,7 @@ function DeleteModal({
         </button>
         <button onClick={confirm} className="btn btn-danger" disabled={busy}>
           <Trash2 size={14} />
-          {busy ? "Deleting…" : "Delete site"}
+          {busy ? "Moving…" : "Move to trash"}
         </button>
       </div>
     </ModalShell>

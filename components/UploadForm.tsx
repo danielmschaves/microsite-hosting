@@ -19,6 +19,7 @@ import {
   Check,
   Copy,
   Link2,
+  Home,
 } from "lucide-react";
 
 const TTL_LABEL: Record<string, string> = {
@@ -27,13 +28,15 @@ const TTL_LABEL: Record<string, string> = {
   "30d": "30 days",
 };
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const MAX_PAGES = 20;
 
 export function UploadForm() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [host, setHost] = useState("/s/");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [indexName, setIndexName] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [slug, setSlug] = useState("");
   const [ttl, setTtl] = useState<"24h" | "7d" | "30d">("7d");
@@ -41,20 +44,48 @@ export function UploadForm() {
   const [chipInput, setChipInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [published, setPublished] = useState<{ slug: string; url: string } | null>(null);
+  const [published, setPublished] = useState<{
+    slug: string;
+    url: string;
+    pages: number;
+  } | null>(null);
 
   useEffect(() => {
     setHost(`${window.location.host}/s/`);
   }, []);
 
-  function pickFile(f: File | null) {
+  function addFiles(incoming: FileList | File[] | null) {
     setError(null);
-    if (!f) return;
-    if (!f.name.toLowerCase().endsWith(".html") && f.type !== "text/html") {
-      setError("Only .html files are accepted.");
-      return;
+    if (!incoming) return;
+    const next = [...files];
+    for (const f of Array.from(incoming)) {
+      if (!f.name.toLowerCase().match(/\.html?$/) && f.type !== "text/html") {
+        setError(`"${f.name}" skipped — only .html files are accepted.`);
+        continue;
+      }
+      if (next.some((x) => x.name === f.name)) continue; // dedupe by name
+      if (next.length >= MAX_PAGES) {
+        setError(`At most ${MAX_PAGES} pages per site.`);
+        break;
+      }
+      next.push(f);
     }
-    setFile(f);
+    setFiles(next);
+    autoPickIndex(next, indexName);
+  }
+
+  function removeFile(name: string) {
+    const next = files.filter((f) => f.name !== name);
+    setFiles(next);
+    autoPickIndex(next, indexName === name ? null : indexName);
+  }
+
+  /** Keep a sensible index selection as the file list changes. */
+  function autoPickIndex(list: File[], current: string | null) {
+    if (list.length === 0) return setIndexName(null);
+    if (current && list.some((f) => f.name === current)) return setIndexName(current);
+    const auto = list.find((f) => f.name.toLowerCase() === "index.html");
+    setIndexName(auto ? auto.name : list.length === 1 ? list[0].name : null);
   }
 
   function commitChip() {
@@ -79,16 +110,21 @@ export function UploadForm() {
   }
 
   async function publish() {
-    if (!file) {
-      setError("Choose an HTML file first.");
+    if (files.length === 0) {
+      setError("Add at least one HTML file.");
+      return;
+    }
+    if (files.length > 1 && !indexName) {
+      setError("Pick which page is the index (entry page).");
       return;
     }
     setBusy(true);
     setError(null);
     try {
       const body = new FormData();
-      body.set("file", file);
+      for (const f of files) body.append("file", f);
       body.set("ttl", ttl);
+      if (files.length > 1 && indexName) body.set("index", indexName);
       if (slug.trim()) body.set("slug", slug.trim());
       const viewers = [...chips];
       if (chipInput.trim() && EMAIL_RE.test(chipInput.trim().toLowerCase())) {
@@ -101,7 +137,7 @@ export function UploadForm() {
       if (!res.ok) {
         setError(data.error || "Upload failed.");
       } else {
-        setPublished({ slug: data.slug, url: data.url });
+        setPublished({ slug: data.slug, url: data.url, pages: data.pages });
         router.refresh();
       }
     } catch {
@@ -113,7 +149,8 @@ export function UploadForm() {
 
   function reset() {
     setPublished(null);
-    setFile(null);
+    setFiles([]);
+    setIndexName(null);
     setSlug("");
     setChips([]);
     setChipInput("");
@@ -123,6 +160,7 @@ export function UploadForm() {
 
   const viewerLabel =
     chips.length === 0 ? "Only me" : chips.length === 1 ? "1 viewer" : `${chips.length} viewers`;
+  const totalKb = files.reduce((s, f) => s + f.size, 0) / 1024;
 
   return (
     <div style={{ maxWidth: 960, margin: "0 auto", padding: "34px 30px 100px" }}>
@@ -137,87 +175,111 @@ export function UploadForm() {
       </h1>
 
       {published ? (
-        <PublishedCard
-          published={published}
-          ttl={ttl}
-          viewerLabel={viewerLabel}
-          onReset={reset}
-        />
+        <PublishedCard published={published} ttl={ttl} viewerLabel={viewerLabel} onReset={reset} />
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 20, alignItems: "start" }}>
           {/* left column */}
           <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-            {!file ? (
-              <div
-                onClick={() => inputRef.current?.click()}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setDragging(true);
-                }}
-                onDragLeave={() => setDragging(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setDragging(false);
-                  pickFile(e.dataTransfer.files?.[0] ?? null);
-                }}
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 12,
-                  padding: "44px 20px",
-                  borderRadius: "var(--r-lg)",
-                  border: `1.5px dashed ${dragging ? "var(--accent)" : "var(--border-strong)"}`,
-                  background: dragging ? "var(--accent-soft)" : "var(--surface-1)",
-                  cursor: "pointer",
-                  textAlign: "center",
-                  transition: "border-color .15s, background .15s",
-                }}
-              >
-                <div style={{ width: 52, height: 52, borderRadius: 14, background: "var(--surface-3)", display: "grid", placeItems: "center", color: "var(--text-muted)" }}>
-                  <UploadCloud size={26} />
-                </div>
-                <div style={{ font: "700 15px/1.3 var(--font-ui)", color: "var(--text)" }}>Drop your HTML file here</div>
-                <div className="mb-mono" style={{ font: "500 12px/1.4 var(--font-mono)", color: "var(--text-subtle)" }}>
-                  single self-contained .html · up to 25&nbsp;MB · click to browse
-                </div>
+            <div
+              onClick={() => inputRef.current?.click()}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragging(true);
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragging(false);
+                addFiles(e.dataTransfer.files);
+              }}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 12,
+                padding: files.length ? "22px 20px" : "44px 20px",
+                borderRadius: "var(--r-lg)",
+                border: `1.5px dashed ${dragging ? "var(--accent)" : "var(--border-strong)"}`,
+                background: dragging ? "var(--accent-soft)" : "var(--surface-1)",
+                cursor: "pointer",
+                textAlign: "center",
+                transition: "border-color .15s, background .15s, padding .15s",
+              }}
+            >
+              <div style={{ width: 52, height: 52, borderRadius: 14, background: "var(--surface-3)", display: "grid", placeItems: "center", color: "var(--text-muted)" }}>
+                <UploadCloud size={26} />
               </div>
-            ) : (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 14,
-                  padding: "16px 18px",
-                  borderRadius: "var(--r-lg)",
-                  border: "1.5px solid var(--success-border)",
-                  background: "var(--success-soft)",
-                }}
-              >
-                <div style={{ width: 44, height: 44, borderRadius: 11, background: "var(--surface-1)", border: "1px solid var(--border)", display: "grid", placeItems: "center", color: "var(--success)", flex: "none" }}>
-                  <FileCode2 size={22} />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ font: "700 14px/1.2 var(--font-ui)", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {file.name}
-                  </div>
-                  <div className="mb-mono" style={{ font: "500 11.5px/1 var(--font-mono)", color: "var(--text-muted)", marginTop: 4 }}>
-                    {(file.size / 1024).toFixed(1)} KB · ready to publish
-                  </div>
-                </div>
-                <button onClick={() => setFile(null)} aria-label="Remove" className="icon-btn" style={{ width: 32, height: 32, background: "var(--surface-1)" }}>
-                  <X size={15} />
-                </button>
+              <div style={{ font: "700 15px/1.3 var(--font-ui)", color: "var(--text)" }}>
+                {files.length ? "Add more pages" : "Drop your HTML files here"}
               </div>
-            )}
+              <div className="mb-mono" style={{ font: "500 12px/1.4 var(--font-mono)", color: "var(--text-subtle)" }}>
+                self-contained .html · up to 25&nbsp;MB total · multi-page supported
+              </div>
+            </div>
             <input
               ref={inputRef}
               type="file"
               accept=".html,text/html"
+              multiple
               style={{ display: "none" }}
-              onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => {
+                addFiles(e.target.files);
+                e.target.value = "";
+              }}
             />
+
+            {files.length > 0 && (
+              <div className="card" style={{ padding: "6px 16px" }}>
+                {files.length > 1 && (
+                  <div className="hint" style={{ margin: "10px 0 4px" }}>
+                    <Home size={12} />
+                    Pick the index — the page viewers land on at /{"{slug}"}
+                  </div>
+                )}
+                {files.map((f) => (
+                  <div
+                    key={f.name}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "11px 0",
+                      borderTop: "1px solid var(--border)",
+                    }}
+                  >
+                    {files.length > 1 && (
+                      <input
+                        type="radio"
+                        name="index"
+                        checked={indexName === f.name}
+                        onChange={() => setIndexName(f.name)}
+                        style={{ accentColor: "var(--accent)", cursor: "pointer" }}
+                        aria-label={`Make ${f.name} the index`}
+                      />
+                    )}
+                    <FileCode2 size={17} style={{ color: "var(--success)", flex: "none" }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ font: "600 13px/1.2 var(--font-ui)", color: "var(--text)" }}>{f.name}</span>
+                      {indexName === f.name && files.length > 1 && (
+                        <span style={{ marginLeft: 8, padding: "2px 7px", borderRadius: 999, background: "var(--accent-soft)", border: "1px solid var(--accent-border)", color: "var(--text)", font: "600 10px/1 var(--font-ui)" }}>
+                          index
+                        </span>
+                      )}
+                    </div>
+                    <span className="mb-mono" style={{ font: "500 11px/1 var(--font-mono)", color: "var(--text-subtle)" }}>
+                      {(f.size / 1024).toFixed(1)} KB
+                    </span>
+                    <button onClick={() => removeFile(f.name)} aria-label="Remove" className="icon-btn" style={{ width: 28, height: 28 }}>
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
+                <div className="mb-mono" style={{ padding: "9px 0", borderTop: "1px solid var(--border)", font: "500 11px/1 var(--font-mono)", color: "var(--text-subtle)", textAlign: "right" }}>
+                  {files.length} page{files.length > 1 ? "s" : ""} · {totalKb.toFixed(1)} KB total
+                </div>
+              </div>
+            )}
 
             {/* config card */}
             <div className="card" style={{ padding: "22px 24px" }}>
@@ -283,7 +345,7 @@ export function UploadForm() {
                 </div>
                 <div className="hint">
                   <Shield size={12} />
-                  Leave empty to keep it visible to you only. Allowlist is enforced server-side.
+                  You can edit this later from the site&apos;s manage panel. Enforced server-side.
                 </div>
               </div>
             </div>
@@ -297,11 +359,15 @@ export function UploadForm() {
             <div style={{ display: "flex", flexDirection: "column", gap: 13, marginBottom: 20 }}>
               <SummaryRow icon={<Lock size={15} />} tint="accent" title="Private by default" sub="SSO required to view" />
               <SummaryRow icon={<Shield size={15} />} tint="success" title="Never publicly readable" sub="Access checked server-side" />
-              <SummaryRow icon={<Timer size={15} />} tint="warning" title={`Self-destructs in ${TTL_LABEL[ttl]}`} sub="Won't outlive its purpose" />
+              <SummaryRow icon={<Timer size={15} />} tint="warning" title={`Self-destructs in ${TTL_LABEL[ttl]}`} sub="Restorable from trash for 7 days" />
             </div>
-            <button onClick={publish} disabled={busy || !file} className="btn btn-primary" style={{ width: "100%", padding: "12px 16px", font: "700 14px/1 var(--font-ui)" }}>
+            <button onClick={publish} disabled={busy || files.length === 0} className="btn btn-primary" style={{ width: "100%", padding: "12px 16px", font: "700 14px/1 var(--font-ui)" }}>
               <Rocket size={16} />
-              {busy ? "Publishing…" : "Publish private site"}
+              {busy
+                ? "Publishing…"
+                : files.length > 1
+                  ? `Publish ${files.length}-page site`
+                  : "Publish private site"}
             </button>
             {error && (
               <div style={{ marginTop: 12, padding: "9px 11px", borderRadius: "var(--r-md)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)", color: "var(--text)", font: "500 12px/1.4 var(--font-ui)" }}>
@@ -350,7 +416,7 @@ function PublishedCard({
   viewerLabel,
   onReset,
 }: {
-  published: { slug: string; url: string };
+  published: { slug: string; url: string; pages: number };
   ttl: string;
   viewerLabel: string;
   onReset: () => void;
@@ -374,7 +440,9 @@ function PublishedCard({
         Your site is live &amp; private
       </h2>
       <p style={{ margin: "0 0 22px", font: "400 13.5px/1.5 var(--font-ui)", color: "var(--text-muted)" }}>
-        Only allowlisted viewers can open it after signing in.
+        {published.pages > 1
+          ? `${published.pages} pages published. Only allowlisted viewers can open them after signing in.`
+          : "Only allowlisted viewers can open it after signing in."}
       </p>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 12px", borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border-strong)", marginBottom: 16 }}>
         <Link2 size={14} style={{ color: "var(--accent)", flex: "none" }} />
@@ -390,6 +458,9 @@ function PublishedCard({
         <Pill icon={<Lock size={11} style={{ color: "var(--accent)" }} />} bg="var(--accent-soft)" bd="var(--accent-border)" text="Private" />
         <Pill icon={<Users size={11} />} bg="var(--surface-3)" bd="var(--border-strong)" text={viewerLabel} muted />
         <Pill icon={<Timer size={11} style={{ color: "var(--warning)" }} />} bg="var(--warning-soft)" bd="var(--warning-border)" text={TTL_LABEL[ttl] || ttl} />
+        {published.pages > 1 && (
+          <Pill icon={<FileCode2 size={11} />} bg="var(--surface-3)" bd="var(--border-strong)" text={`${published.pages} pages`} muted />
+        )}
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
         <button onClick={onReset} className="btn btn-neutral">

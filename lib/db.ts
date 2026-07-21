@@ -31,10 +31,12 @@ export interface SiteRow {
   index_key: string;
   content_type: string;
   size_bytes: number;
+  page_count: number;
   ttl_preset: string;
   expires_at: Date;
   created_at: Date;
   deleted_at: Date | null;
+  purged_at: Date | null;
 }
 
 // Idempotent schema creation. Runs on server startup (see instrumentation.ts)
@@ -64,6 +66,25 @@ CREATE TABLE IF NOT EXISTS site_viewers (
   viewer_email TEXT NOT NULL,
   PRIMARY KEY (site_id, viewer_email)
 );
+
+-- Additive migrations (idempotent) -----------------------------------------
+-- Trash/restore: deleted_at now means "in trash"; purged_at marks the point
+-- where storage was actually deleted (site no longer restorable).
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS purged_at TIMESTAMPTZ;
+-- Multi-page sites: how many HTML files the site contains.
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS page_count INTEGER NOT NULL DEFAULT 1;
+
+-- First-party product analytics (no third-party SDK).
+CREATE TABLE IF NOT EXISTS events (
+  id         BIGSERIAL PRIMARY KEY,
+  type       TEXT NOT NULL,
+  site_id    UUID,
+  actor      TEXT,
+  meta       JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS events_site_idx ON events (site_id, type, created_at);
 `;
 
 export async function migrate(): Promise<void> {
