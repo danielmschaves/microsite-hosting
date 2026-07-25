@@ -528,7 +528,9 @@ export function TeamPanel({
 function UsageStat({ label, value }: { label: string; value: string }) {
   return (
     <div style={{ padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border)" }}>
-      <div style={{ font: "600 11px/1 var(--font-ui)", color: "var(--text-subtle)", marginBottom: 8 }}>{label}</div>
+      <div className="mb-mono" style={{ font: "600 10.5px/1 var(--font-mono)", letterSpacing: ".12em", textTransform: "uppercase", color: "var(--text-subtle)", marginBottom: 8 }}>
+        {label}
+      </div>
       <div style={{ font: "800 19px/1 var(--font-ui)", color: "var(--text)" }}>{value}</div>
     </div>
   );

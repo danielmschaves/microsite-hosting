@@ -520,7 +520,7 @@ function Stat({
     <div style={{ padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 7, color: "var(--text-subtle)", marginBottom: 8 }}>
         {icon}
-        <span style={{ font: "600 11px/1 var(--font-ui)" }}>{label}</span>
+        <span className="mb-mono" style={{ font: "600 10.5px/1 var(--font-mono)", letterSpacing: ".12em", textTransform: "uppercase" }}>{label}</span>
       </div>
       <div style={{ font: "800 19px/1 var(--font-ui)", color: "var(--text)" }}>{value}</div>
     </div>

@@ -23,6 +23,7 @@ import {
   FileCode2,
   Settings2,
   ArchiveRestore,
+  AlertTriangle,
 } from "lucide-react";
 
 export interface SiteView {
@@ -110,7 +111,11 @@ export function SitesView({
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [view, setView] = useState<"grid" | "list">("grid");
   const [q, setQ] = useState("");
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{
+    title: string;
+    detail: string;
+    tone: "accent" | "danger";
+  } | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [extendId, setExtendId] = useState<string | null>(null);
 
@@ -142,10 +147,18 @@ export function SitesView({
   async function copyUrl(url: string) {
     try {
       await navigator.clipboard.writeText(url);
-      setToast("Link copied to clipboard");
-      setTimeout(() => setToast(null), 2000);
+      setToast({
+        title: "Link copied",
+        detail: "Private URL copied to clipboard.",
+        tone: "accent",
+      });
+      setTimeout(() => setToast(null), 2200);
     } catch {
-      setToast("Copy failed — select the URL manually");
+      setToast({
+        title: "Copy failed",
+        detail: "Select the URL manually.",
+        tone: "danger",
+      });
       setTimeout(() => setToast(null), 2500);
     }
   }
@@ -258,7 +271,7 @@ export function SitesView({
         <TrashSection trash={trash} nowMs={nowMs} onChanged={() => router.refresh()} />
       )}
 
-      {toast && <Toast message={toast} />}
+      {toast && <Toast title={toast.title} detail={toast.detail} tone={toast.tone} />}
 
       {deleteSite && (
         <DeleteModal
@@ -828,7 +841,17 @@ function TrashSection({
   );
 }
 
-function Toast({ message }: { message: string }) {
+/** Toast per the design system: left semantic border, icon, title + detail. */
+function Toast({
+  title,
+  detail,
+  tone,
+}: {
+  title: string;
+  detail: string;
+  tone: "accent" | "danger";
+}) {
+  const color = `var(--${tone})`;
   return (
     <div
       style={{
@@ -837,33 +860,29 @@ function Toast({ message }: { message: string }) {
         bottom: 22,
         zIndex: 60,
         display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "12px 15px",
-        borderRadius: "var(--r-md)",
-        background: "var(--surface-1)",
-        border: "1px solid var(--border-strong)",
+        gap: 12,
+        alignItems: "flex-start",
+        padding: "13px 15px",
+        borderRadius: 12,
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+        borderLeft: `3px solid ${color}`,
         boxShadow: "var(--shadow-2)",
-        color: "var(--text)",
-        font: "600 13px/1 var(--font-ui)",
+        maxWidth: 340,
         animation: "mb-toast-in .2s ease",
       }}
     >
-      <span
-        style={{
-          width: 22,
-          height: 22,
-          borderRadius: 6,
-          background: "var(--success-soft)",
-          border: "1px solid var(--success-border)",
-          display: "grid",
-          placeItems: "center",
-          color: "var(--success)",
-        }}
-      >
-        <Check size={13} />
-      </span>
-      {message}
+      {tone === "danger" ? (
+        <AlertTriangle size={18} style={{ color, flex: "none", marginTop: 1 }} />
+      ) : (
+        <Link2 size={18} style={{ color, flex: "none", marginTop: 1 }} />
+      )}
+      <div>
+        <div style={{ font: "600 13.5px/1.2 var(--font-ui)", color: "var(--text)" }}>{title}</div>
+        <div style={{ font: "400 12.5px/1.4 var(--font-ui)", color: "var(--text-muted)", marginTop: 3 }}>
+          {detail}
+        </div>
+      </div>
     </div>
   );
 }

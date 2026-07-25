@@ -20,6 +20,7 @@ import {
   Copy,
   Link2,
   Home,
+  Loader2,
 } from "lucide-react";
 
 const TTL_LABEL: Record<string, string> = {
@@ -65,6 +66,7 @@ export function UploadForm({
   const [chipInput, setChipInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
+  const [uploadingName, setUploadingName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [published, setPublished] = useState<{
     slug: string;
@@ -234,6 +236,7 @@ export function UploadForm({
         setProgress(0);
         for (let i = 0; i < files.length; i++) {
           const target = (presign.files as { name: string; url: string; fields: Record<string, string> }[])[i];
+          setUploadingName(target.name);
           await s3Post(target.url, target.fields, files[i], (frac) => {
             done[i] = frac * files[i].size;
             setProgress(
@@ -275,6 +278,7 @@ export function UploadForm({
     } finally {
       setBusy(false);
       setProgress(null);
+      setUploadingName(null);
     }
   }
 
@@ -368,7 +372,39 @@ export function UploadForm({
               }}
             />
 
-            {files.length > 0 && (
+            {progress !== null && (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "center",
+                  gap: 14,
+                  borderRadius: "var(--r-md)",
+                  border: "1.5px solid var(--border-strong)",
+                  background: "var(--surface-2)",
+                  padding: 20,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <Loader2 size={18} style={{ color: "var(--accent)", animation: "mb-spin 1s linear infinite" }} />
+                  <span style={{ font: "600 13px/1 var(--font-ui)", color: "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {uploadingName ?? files[0]?.name}
+                  </span>
+                  <span className="mb-mono" style={{ font: "600 12px/1 var(--font-mono)", color: "var(--accent)" }}>
+                    {progress}%
+                  </span>
+                </div>
+                <div style={{ height: 7, borderRadius: 999, background: "var(--surface-3)", overflow: "hidden" }}>
+                  <div style={{ width: `${progress}%`, height: "100%", borderRadius: 999, background: "var(--accent)", boxShadow: "0 0 12px var(--accent)", transition: "width .2s" }} />
+                </div>
+                <div className="mb-mono" style={{ font: "500 11px/1 var(--font-mono)", color: "var(--text-subtle)" }}>
+                  Uploading · {totalKb >= 1024 ? `${(totalKb / 1024).toFixed(1)} MB` : `${totalKb.toFixed(1)} KB`}
+                  {files.length > 1 ? ` · ${files.length} pages` : ""}
+                </div>
+              </div>
+            )}
+
+            {files.length > 0 && progress === null && (
               <div className="card" style={{ padding: "6px 16px" }}>
                 {files.length > 1 && (
                   <div className="hint" style={{ margin: "10px 0 4px" }}>
@@ -578,18 +614,11 @@ export function UploadForm({
             <button onClick={publish} disabled={busy || files.length === 0} className="btn btn-primary" style={{ width: "100%", padding: "12px 16px", font: "700 14px/1 var(--font-ui)" }}>
               <Rocket size={16} />
               {busy
-                ? progress !== null
-                  ? `Uploading… ${progress}%`
-                  : "Publishing…"
+                ? "Publishing…"
                 : files.length > 1
                   ? `Publish ${files.length}-page site`
                   : "Publish private site"}
             </button>
-            {progress !== null && (
-              <div style={{ marginTop: 10, height: 6, borderRadius: 999, background: "var(--surface-2)", border: "1px solid var(--border)", overflow: "hidden" }}>
-                <div style={{ width: `${progress}%`, height: "100%", background: "var(--accent)", transition: "width .2s" }} />
-              </div>
-            )}
             {error && (
               <div style={{ marginTop: 12, padding: "9px 11px", borderRadius: "var(--r-md)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)", color: "var(--text)", font: "500 12px/1.4 var(--font-ui)" }}>
                 {error}
