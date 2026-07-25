@@ -51,14 +51,26 @@ Pages (App Router):
 - `/upload` — "Publish a page": dropzone + config (slug, TTL, viewer allowlist chips) + summary panel
 - `/settings` — profile + configured sign-in providers + sign out
 
-- `/sites/[id]` — owner-only manage panel: stats, TTL, slug rename, viewer allowlist CRUD, pages list, trash/restore/purge
+- `/sites/[id]` — owner-only manage panel: stats, TTL, slug rename, visibility, viewer allowlist CRUD, pages list, trash/restore/purge
+- `/teams`, `/teams/[id]` — workspaces: members/roles/invites, usage, sites table (admin force-expire/trash), audit log (team plan), billing card, max-TTL policy
+- `/invite/[token]` — invite acceptance (email-bound, 14d expiry)
 
 API / handlers:
 - `/s/[slug]/[[...path]]` — auth-gated content serving (verify session + allowlist, then stream from S3); records a `site_view` event
 - `/api/upload` — POST: accepts 1–20 `.html` files (multi-page; `index` field or auto-detected `index.html`), stores under a slug-decoupled S3 prefix (`sites/{slug}-{ts}/`), writes metadata to Postgres
 - `/api/sites/[id]` — DELETE (move to trash; `?permanent=true` purges storage) · PATCH (`{ttl}` extend, `{slug}` rename — metadata-only, prefix never moves, `{action:"restore"}` un-trash)
 - `/api/sites/[id]/viewers` — GET/POST/DELETE: allowlist CRUD, effective immediately
-- `/api/cleanup` — GET/POST, `Authorization: Bearer $CRON_SECRET`: phase 1 trashes expired sites (storage kept); phase 2 purges storage for sites trashed > 7 days (`TRASH_DAYS` in `lib/plan.ts`)
+- `/api/cleanup` — GET/POST, `Authorization: Bearer $CRON_SECRET`: phase 1 trashes expired sites (storage kept); phase 2 purges storage for sites trashed > 7 days; phase 3 purges incomplete presigned uploads > 24h
+- `/api/upload/presign` + `/api/upload/complete` — presigned browser→S3 path (no server body cap); `/api/upload` is the ≤4MB multipart fallback; both share `lib/createSite.ts`
+- `/api/workspaces[...]` — workspace CRUD, members (owner immovable), invites (admin+), audit (admin+, team plan), billing checkout/portal (owner)
+- `/api/invites/[token]` — POST accept (session email must equal invited email)
+- `/api/stripe/webhook` — signature-verified; `lib/billing.ts` `syncSubscriptionToWorkspace` is the SOLE writer of plan/seats/status
+
+## Authorization & plans
+
+- All site access decisions live in `lib/authz.ts` (`canViewSite`, `authorizeSiteManage`); workspace role guards in `lib/teams.ts` (`requireWorkspaceRole`). Never inline auth checks in routes.
+- Plans in `lib/plan.ts`: free (5 sites / 25MB / 7d TTL) vs team (100 / 250MB / 90d / 30d audit). **Team visibility is the paywall.** Gates return 402 + `upgradeUrl` and apply to new operations only — existing sites are grandfathered. `PLAN_FAKE_TEAM=true` fakes team locally (blocked on Vercel prod).
+- Optional services degrade gracefully via env detection: Resend (`lib/email.ts` — invite links always returned for copy-paste), Stripe (`billingEnabled`), presigned uploads (`S3_PUBLIC_ENDPOINT` for the docker browser-vs-container endpoint split).
 
 ## Front-end / design system
 
