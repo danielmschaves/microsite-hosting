@@ -55,12 +55,18 @@ export async function GET(
   }
 
   // First-party analytics: record the page view (never blocks serving).
-  await track("site_view", {
-    siteId: site.id,
-    workspaceId: site.workspace_id ?? undefined,
-    actor: lower,
-    meta: { path: subPath || "index", owner: isOwner },
-  });
+  // Dashboard thumbnail previews (?preview=1) by the owner are not real
+  // views and would drown the stats — skip them. Non-owners are always
+  // counted regardless of the flag.
+  const isPreview = new URL(req.url).searchParams.get("preview") === "1";
+  if (!(isPreview && isOwner)) {
+    await track("site_view", {
+      siteId: site.id,
+      workspaceId: site.workspace_id ?? undefined,
+      actor: lower,
+      meta: { path: subPath || "index", owner: isOwner },
+    });
+  }
 
   // 5. Serve with a sandboxing content-security policy. Self-contained pages
   //    (inline styles/scripts, embedded/data images) render; cross-origin

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requestBase } from "@/lib/url";
 import { query } from "@/lib/db";
 import { requireWorkspaceRole } from "@/lib/teams";
 import { billingEnabled } from "@/lib/plan";
@@ -26,7 +27,7 @@ export async function POST(
     "SELECT count(*) FROM workspace_members WHERE workspace_id = $1",
     [id],
   );
-  const base = process.env.NEXT_PUBLIC_BASE_URL || new URL(req.url).origin;
+  const base = requestBase(req);
   const url = await createCheckoutSession(
     res.workspace,
     Number(members[0].count),

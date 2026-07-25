@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requestBase } from "@/lib/url";
 import { auth } from "@/auth";
 import { putObject } from "@/lib/storage";
 import {
@@ -127,7 +128,7 @@ export async function POST(req: Request) {
     viewers: parseEmails(viewersRaw),
   });
 
-  const base = process.env.NEXT_PUBLIC_BASE_URL || new URL(req.url).origin;
+  const base = requestBase(req);
   return NextResponse.json({
     slug: site.slug,
     url: `${base}/s/${site.slug}`,

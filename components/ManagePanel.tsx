@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -94,6 +94,11 @@ export function ManagePanel({
   const [viewers, setViewers] = useState(initialViewers);
   const [viewerInput, setViewerInput] = useState("");
   const [copied, setCopied] = useState(false);
+  const [origin, setOrigin] = useState("");
+
+  useEffect(() => {
+    setOrigin(window.location.origin);
+  }, []);
 
   function flash(msg: string) {
     setNotice(msg);
@@ -128,7 +133,7 @@ export function ManagePanel({
 
   async function copyLink() {
     try {
-      await navigator.clipboard.writeText(site.url);
+      await navigator.clipboard.writeText(`${window.location.origin}${site.url}`);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -279,7 +284,7 @@ export function ManagePanel({
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 12px", borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border-strong)", marginBottom: 18 }}>
           <Link2 size={14} style={{ color: "var(--accent)", flex: "none" }} />
           <a href={site.url} target="_blank" rel="noreferrer" className="mb-mono" style={{ flex: 1, font: "500 13px/1 var(--font-mono)", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {site.url}
+            {origin ? `${origin}${site.url}` : site.url}
           </a>
           <button onClick={copyLink} className="btn btn-primary" style={{ padding: "7px 12px", font: "600 12px/1 var(--font-ui)", flex: "none" }}>
             <Copy size={13} />
