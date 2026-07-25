@@ -20,17 +20,33 @@ import {
   Copy,
   Link2,
   Home,
+  Loader2,
 } from "lucide-react";
 
 const TTL_LABEL: Record<string, string> = {
   "24h": "24 hours",
   "7d": "7 days",
   "30d": "30 days",
+  "90d": "90 days",
 };
+const ALL_TTLS = ["24h", "7d", "30d", "90d"] as const;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const MAX_PAGES = 20;
 
-export function UploadForm() {
+export interface UploadWorkspace {
+  id: string;
+  name: string;
+  plan: string;
+  allowedTtls: string[];
+}
+
+export function UploadForm({
+  workspaces = [],
+  personalTtls = ["24h", "7d", "30d"],
+}: {
+  workspaces?: UploadWorkspace[];
+  personalTtls?: string[];
+}) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -39,10 +55,18 @@ export function UploadForm() {
   const [indexName, setIndexName] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [slug, setSlug] = useState("");
-  const [ttl, setTtl] = useState<"24h" | "7d" | "30d">("7d");
+  const [ttl, setTtl] = useState<string>("7d");
+  const [dest, setDest] = useState(""); // "" = personal, else workspace id
+  const [visibility, setVisibility] = useState<"only_me" | "allowlist" | "team">("allowlist");
+
+  const destWorkspace = workspaces.find((w) => w.id === dest) || null;
+  const allowedTtls = destWorkspace ? destWorkspace.allowedTtls : personalTtls;
+  const teamLocked = Boolean(destWorkspace && destWorkspace.plan !== "team");
   const [chips, setChips] = useState<string[]>([]);
   const [chipInput, setChipInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<number | null>(null);
+  const [uploadingName, setUploadingName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [published, setPublished] = useState<{
     slug: string;
@@ -50,8 +74,24 @@ export function UploadForm() {
     pages: number;
   } | null>(null);
 
+  const FALLBACK_MAX = 4 * 1024 * 1024; // multipart route cap
+
   useEffect(() => {
     setHost(`${window.location.host}/s/`);
+    // Pre-fill from "Defaults for new sites" (settings page, localStorage).
+    try {
+      const t = localStorage.getItem("mb-default-ttl");
+      if (t && personalTtls.includes(t)) setTtl(t);
+      const v = localStorage.getItem("mb-default-visibility");
+      if (v === "only_me" || v === "allowlist") setVisibility(v);
+      const c = JSON.parse(localStorage.getItem("mb-default-viewers") || "[]");
+      if (Array.isArray(c) && c.length) {
+        setChips(c.filter((x) => typeof x === "string" && EMAIL_RE.test(x)));
+      }
+    } catch {
+      /* ignore */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function addFiles(incoming: FileList | File[] | null) {
@@ -109,6 +149,63 @@ export function UploadForm() {
     }
   }
 
+  function collectViewers(): string[] {
+    const viewers = visibility === "allowlist" ? [...chips] : [];
+    if (
+      visibility === "allowlist" &&
+      chipInput.trim() &&
+      EMAIL_RE.test(chipInput.trim().toLowerCase())
+    ) {
+      viewers.push(chipInput.trim().toLowerCase());
+    }
+    return viewers;
+  }
+
+  /** POST one file straight to S3 using a presigned policy, with progress. */
+  function s3Post(
+    url: string,
+    fields: Record<string, string>,
+    file: File,
+    onProgress: (fraction: number) => void,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const fd = new FormData();
+      for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+      fd.append("file", file); // must be the last field in a POST policy
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", url);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(e.loaded / e.total);
+      };
+      xhr.onload = () =>
+        xhr.status >= 200 && xhr.status < 300
+          ? resolve()
+          : reject(new Error(`Storage rejected the upload (${xhr.status})`));
+      xhr.onerror = () => reject(new Error("network"));
+      xhr.send(fd);
+    });
+  }
+
+  /** Fallback: multipart through the app server (small uploads only). */
+  async function publishViaServer(viewers: string[]) {
+    const body = new FormData();
+    for (const f of files) body.append("file", f);
+    body.set("ttl", ttl);
+    if (files.length > 1 && indexName) body.set("index", indexName);
+    if (slug.trim()) body.set("slug", slug.trim());
+    if (dest) body.set("workspaceId", dest);
+    body.set("visibility", visibility);
+    if (viewers.length) body.set("viewers", viewers.join(","));
+
+    const res = await fetch("/api/upload", { method: "POST", body });
+    const data = await res.json();
+    if (!res.ok) setError(data.error || "Upload failed.");
+    else {
+      setPublished({ slug: data.slug, url: data.url, pages: data.pages });
+      router.refresh();
+    }
+  }
+
   async function publish() {
     if (files.length === 0) {
       setError("Add at least one HTML file.");
@@ -120,30 +217,82 @@ export function UploadForm() {
     }
     setBusy(true);
     setError(null);
-    try {
-      const body = new FormData();
-      for (const f of files) body.append("file", f);
-      body.set("ttl", ttl);
-      if (files.length > 1 && indexName) body.set("index", indexName);
-      if (slug.trim()) body.set("slug", slug.trim());
-      const viewers = [...chips];
-      if (chipInput.trim() && EMAIL_RE.test(chipInput.trim().toLowerCase())) {
-        viewers.push(chipInput.trim().toLowerCase());
-      }
-      if (viewers.length) body.set("viewers", viewers.join(","));
+    setProgress(null);
+    const viewers = collectViewers();
+    const totalBytes = files.reduce((s, f) => s + f.size, 0);
 
-      const res = await fetch("/api/upload", { method: "POST", body });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "Upload failed.");
-      } else {
+    try {
+      // Preferred path: presigned browser->S3 upload (no server body cap).
+      const presignRes = await fetch("/api/upload/presign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          files: files.map((f) => ({ name: f.name, size: f.size })),
+          ttl,
+          workspaceId: dest || undefined,
+          visibility,
+        }),
+      });
+      const presign = await presignRes.json().catch(() => ({}));
+      if (!presignRes.ok) {
+        // Validation/gate errors are real answers — surface them. Only an
+        // unavailable presign service falls back.
+        if (presignRes.status === 503 && totalBytes <= FALLBACK_MAX) {
+          await publishViaServer(viewers);
+        } else {
+          setError(presign.error || "Upload failed.");
+        }
+        return;
+      }
+
+      try {
+        const done: number[] = files.map(() => 0);
+        setProgress(0);
+        for (let i = 0; i < files.length; i++) {
+          const target = (presign.files as { name: string; url: string; fields: Record<string, string> }[])[i];
+          setUploadingName(target.name);
+          await s3Post(target.url, target.fields, files[i], (frac) => {
+            done[i] = frac * files[i].size;
+            setProgress(
+              Math.round((done.reduce((s, x) => s + x, 0) / totalBytes) * 100),
+            );
+          });
+        }
+      } catch (s3err) {
+        // Storage unreachable (network/CORS) — retry small uploads via server.
+        if (totalBytes <= FALLBACK_MAX) {
+          setProgress(null);
+          await publishViaServer(viewers);
+          return;
+        }
+        throw s3err;
+      }
+
+      const completeRes = await fetch("/api/upload/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uploadId: presign.uploadId,
+          ttl,
+          slug: slug.trim() || undefined,
+          index: files.length > 1 && indexName ? indexName : undefined,
+          viewers: viewers.join(","),
+          workspaceId: dest || undefined,
+          visibility,
+        }),
+      });
+      const data = await completeRes.json();
+      if (!completeRes.ok) setError(data.error || "Upload failed.");
+      else {
         setPublished({ slug: data.slug, url: data.url, pages: data.pages });
         router.refresh();
       }
-    } catch {
-      setError("Network error during upload.");
+    } catch (err) {
+      setError(err instanceof Error && err.message !== "network" ? err.message : "Network error during upload.");
     } finally {
       setBusy(false);
+      setProgress(null);
+      setUploadingName(null);
     }
   }
 
@@ -155,11 +304,19 @@ export function UploadForm() {
     setChips([]);
     setChipInput("");
     setTtl("7d");
+    setDest("");
+    setVisibility("allowlist");
     if (inputRef.current) inputRef.current.value = "";
   }
 
   const viewerLabel =
-    chips.length === 0 ? "Only me" : chips.length === 1 ? "1 viewer" : `${chips.length} viewers`;
+    visibility === "team"
+      ? "Whole team"
+      : visibility === "only_me" || chips.length === 0
+        ? "Only me"
+        : chips.length === 1
+          ? "1 viewer"
+          : `${chips.length} viewers`;
   const totalKb = files.reduce((s, f) => s + f.size, 0) / 1024;
 
   return (
@@ -229,7 +386,39 @@ export function UploadForm() {
               }}
             />
 
-            {files.length > 0 && (
+            {progress !== null && (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "center",
+                  gap: 14,
+                  borderRadius: "var(--r-md)",
+                  border: "1.5px solid var(--border-strong)",
+                  background: "var(--surface-2)",
+                  padding: 20,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <Loader2 size={18} style={{ color: "var(--accent)", animation: "mb-spin 1s linear infinite" }} />
+                  <span style={{ font: "600 13px/1 var(--font-ui)", color: "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {uploadingName ?? files[0]?.name}
+                  </span>
+                  <span className="mb-mono" style={{ font: "600 12px/1 var(--font-mono)", color: "var(--accent)" }}>
+                    {progress}%
+                  </span>
+                </div>
+                <div style={{ height: 7, borderRadius: 999, background: "var(--surface-3)", overflow: "hidden" }}>
+                  <div style={{ width: `${progress}%`, height: "100%", borderRadius: 999, background: "var(--accent)", boxShadow: "0 0 12px var(--accent)", transition: "width .2s" }} />
+                </div>
+                <div className="mb-mono" style={{ font: "500 11px/1 var(--font-mono)", color: "var(--text-subtle)" }}>
+                  Uploading · {totalKb >= 1024 ? `${(totalKb / 1024).toFixed(1)} MB` : `${totalKb.toFixed(1)} KB`}
+                  {files.length > 1 ? ` · ${files.length} pages` : ""}
+                </div>
+              </div>
+            )}
+
+            {files.length > 0 && progress === null && (
               <div className="card" style={{ padding: "6px 16px" }}>
                 {files.length > 1 && (
                   <div className="hint" style={{ margin: "10px 0 4px" }}>
@@ -309,15 +498,89 @@ export function UploadForm() {
               <div style={{ marginBottom: 18 }}>
                 <label className="lbl">Expires after</label>
                 <div className="seg-group">
-                  {(["24h", "7d", "30d"] as const).map((k) => (
-                    <button key={k} className={`seg${ttl === k ? " active" : ""}`} onClick={() => setTtl(k)}>
-                      <Clock size={14} />
-                      {TTL_LABEL[k]}
-                    </button>
-                  ))}
+                  {ALL_TTLS.map((k) => {
+                    const locked = !allowedTtls.includes(k);
+                    return (
+                      <button
+                        key={k}
+                        className={`seg${ttl === k ? " active" : ""}`}
+                        disabled={locked}
+                        style={locked ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                        title={locked ? "Longer TTLs require the Team plan" : undefined}
+                        onClick={() => setTtl(k)}
+                      >
+                        <Clock size={14} />
+                        {TTL_LABEL[k]}
+                      </button>
+                    );
+                  })}
+                </div>
+                {!allowedTtls.includes(ttl) && (
+                  <div className="hint" style={{ color: "var(--warning)" }}>
+                    <Clock size={12} />
+                    Pick an available preset — current selection isn&apos;t allowed here.
+                  </div>
+                )}
+              </div>
+
+              {workspaces.length > 0 && (
+                <div style={{ marginBottom: 18 }}>
+                  <label className="lbl">Publish to</label>
+                  <select
+                    value={dest}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setDest(next);
+                      const ws = workspaces.find((w) => w.id === next) || null;
+                      if (visibility === "team" && (!ws || ws.plan !== "team")) {
+                        setVisibility("allowlist");
+                      }
+                      const nextTtls = ws ? ws.allowedTtls : personalTtls;
+                      if (!nextTtls.includes(ttl)) setTtl(nextTtls[nextTtls.length - 1]);
+                    }}
+                    className="field"
+                  >
+                    <option value="">Personal</option>
+                    {workspaces.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div style={{ marginBottom: 18 }}>
+                <label className="lbl">Who can view</label>
+                <div className="seg-group">
+                  <button className={`seg${visibility === "only_me" ? " active" : ""}`} onClick={() => setVisibility("only_me")}>
+                    <Lock size={14} />
+                    Only me
+                  </button>
+                  <button className={`seg${visibility === "allowlist" ? " active" : ""}`} onClick={() => setVisibility("allowlist")}>
+                    <Mail size={14} />
+                    Specific people
+                  </button>
+                  <button
+                    className={`seg${visibility === "team" ? " active" : ""}`}
+                    onClick={() => dest && !teamLocked && setVisibility("team")}
+                    disabled={!dest || teamLocked}
+                    style={!dest || teamLocked ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                    title={
+                      !dest
+                        ? "Pick a workspace destination first"
+                        : teamLocked
+                          ? "Team visibility requires the Team plan — upgrade from the workspace page"
+                          : undefined
+                    }
+                  >
+                    <Users size={14} />
+                    Whole team
+                  </button>
                 </div>
               </div>
 
+              {visibility === "allowlist" && (
               <div>
                 <label className="lbl">Allowed viewers</label>
                 <div className="focus-ring" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: 10, borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border-strong)" }}>
@@ -348,6 +611,7 @@ export function UploadForm() {
                   You can edit this later from the site&apos;s manage panel. Enforced server-side.
                 </div>
               </div>
+              )}
             </div>
           </div>
 

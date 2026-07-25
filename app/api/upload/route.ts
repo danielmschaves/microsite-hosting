@@ -1,36 +1,28 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { query, type SiteRow } from "@/lib/db";
 import { putObject } from "@/lib/storage";
-import { generateSlug, normalizeSlug } from "@/lib/slug";
-import { expiresAtFrom, isTtlPreset } from "@/lib/ttl";
-import { track } from "@/lib/events";
+import {
+  MAX_PAGES,
+  sanitizeFilename,
+  parseEmails,
+  validateUploadRequest,
+  resolveIndex,
+  resolveSlug,
+  createSiteRecord,
+} from "@/lib/createSite";
 
 export const runtime = "nodejs";
 
-const MAX_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 26_214_400);
-const MAX_PAGES = 20;
-
-/**
- * Make a stored filename safe: strip any path components, keep a conservative
- * character set, and require a .html extension. Returns null if unusable.
- */
-function sanitizeFilename(name: string): string | null {
-  const base = name.split(/[\\/]/).pop() || "";
-  const cleaned = base
-    .trim()
-    .replace(/[^a-zA-Z0-9._ -]/g, "-")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^[.-]+/, "");
-  if (!/\.html?$/i.test(cleaned)) return null;
-  if (cleaned.length < 6 || cleaned.length > 128) return null; // "a.html" = 6
-  return cleaned;
-}
+// Multipart fallback path: files transit the app server, so this is capped
+// well under Vercel's ~4.5MB function body limit. Large uploads go through
+// the presigned browser->S3 path (/api/upload/presign + /complete).
+const SERVER_UPLOAD_MAX_BYTES = Number(
+  process.env.SERVER_UPLOAD_MAX_BYTES || 4 * 1024 * 1024,
+);
 
 export async function POST(req: Request) {
   const session = await auth();
-  const email = session?.user?.email;
+  const email = session?.user?.email?.toLowerCase();
   if (!email) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -41,6 +33,8 @@ export async function POST(req: Request) {
   const requestedSlug = String(form.get("slug") || "").trim();
   const requestedIndex = String(form.get("index") || "").trim();
   const viewersRaw = String(form.get("viewers") || "");
+  const workspaceId = String(form.get("workspaceId") || "").trim() || null;
+  const visibilityRaw = String(form.get("visibility") || "allowlist");
 
   if (rawFiles.length === 0) {
     return NextResponse.json({ error: "No file provided" }, { status: 400 });
@@ -51,12 +45,14 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
-  if (!isTtlPreset(ttl)) {
-    return NextResponse.json(
-      { error: "ttl must be one of 24h, 7d, 30d" },
-      { status: 400 },
-    );
-  }
+
+  const validated = await validateUploadRequest({
+    email,
+    ttl,
+    workspaceId,
+    visibilityRaw,
+  });
+  if ("error" in validated) return validated.error;
 
   // Validate + sanitize every file (single self-contained .html pages only).
   const files: { name: string; file: File }[] = [];
@@ -87,120 +83,55 @@ export async function POST(req: Request) {
     totalBytes += f.size;
     files.push({ name, file: f });
   }
-  if (totalBytes > MAX_BYTES) {
+
+  const sizeCap = Math.min(validated.plan.maxSiteBytes, SERVER_UPLOAD_MAX_BYTES);
+  if (totalBytes > sizeCap) {
     return NextResponse.json(
-      { error: `Files exceed max total size of ${MAX_BYTES} bytes` },
+      {
+        error: `Files exceed the ${(sizeCap / (1024 * 1024)).toFixed(0)} MB limit for direct upload — larger sites use the browser upload path`,
+      },
       { status: 413 },
     );
   }
 
-  // Resolve the index page: explicit choice, single file, or index.html.
-  let indexName: string;
-  if (requestedIndex) {
-    const match = sanitizeFilename(requestedIndex);
-    if (!match || !seen.has(match)) {
-      return NextResponse.json(
-        { error: "index must name one of the uploaded files" },
-        { status: 400 },
-      );
-    }
-    indexName = match;
-  } else if (files.length === 1) {
-    indexName = files[0].name;
-  } else {
-    const auto = files.find((f) => f.name.toLowerCase() === "index.html");
-    if (!auto) {
-      return NextResponse.json(
-        { error: "Multiple files: include an index.html or mark one as index" },
-        { status: 400 },
-      );
-    }
-    indexName = auto.name;
+  const idx = resolveIndex(
+    files.map((f) => f.name),
+    requestedIndex,
+  );
+  if ("error" in idx) {
+    return NextResponse.json({ error: idx.error }, { status: 400 });
   }
 
-  // Resolve slug: use the requested one (validated) or generate a unique one.
-  let slug: string | null;
-  if (requestedSlug) {
-    slug = normalizeSlug(requestedSlug);
-    if (!slug) {
-      return NextResponse.json(
-        { error: "Invalid slug (use 3-63 lowercase letters, numbers, dashes)" },
-        { status: 400 },
-      );
-    }
-    const existing = await query<SiteRow>(
-      "SELECT id FROM sites WHERE slug = $1 AND deleted_at IS NULL",
-      [slug],
-    );
-    if (existing.length > 0) {
-      return NextResponse.json({ error: "Slug already taken" }, { status: 409 });
-    }
-  } else {
-    slug = await uniqueSlug();
+  const slugRes = await resolveSlug(requestedSlug);
+  if ("error" in slugRes) {
+    return NextResponse.json({ error: slugRes.error }, { status: slugRes.status });
   }
+  const { slug } = slugRes;
 
   const s3Prefix = `sites/${slug}-${Date.now().toString(36)}/`;
   for (const { name, file } of files) {
     const buffer = Buffer.from(await file.arrayBuffer());
     await putObject(`${s3Prefix}${name}`, buffer, "text/html; charset=utf-8");
   }
-  const indexKey = `${s3Prefix}${indexName}`;
 
-  const expiresAt = expiresAtFrom(ttl);
-  const inserted = await query<SiteRow>(
-    `INSERT INTO sites
-       (slug, owner_email, s3_prefix, index_key, content_type, size_bytes, page_count, ttl_preset, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     RETURNING *`,
-    [slug, email, s3Prefix, indexKey, "text/html", totalBytes, files.length, ttl, expiresAt],
-  );
-  const site = inserted[0];
-
-  // Owner always has access; add any additional allowlisted viewer emails.
-  const viewers = parseEmails(viewersRaw);
-  for (const viewer of viewers) {
-    await query(
-      `INSERT INTO site_viewers (site_id, viewer_email)
-       VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-      [site.id, viewer],
-    );
-  }
-
-  await track("site_created", {
-    siteId: site.id,
-    actor: email,
-    meta: { pages: files.length, ttl, bytes: totalBytes, viewers: viewers.length },
+  const site = await createSiteRecord({
+    email,
+    slug,
+    s3Prefix,
+    indexName: idx.indexName,
+    totalBytes,
+    pageCount: files.length,
+    ttl: validated.ttl,
+    workspaceId: validated.workspaceId,
+    visibility: validated.visibility,
+    viewers: parseEmails(viewersRaw),
   });
 
   const base = process.env.NEXT_PUBLIC_BASE_URL || new URL(req.url).origin;
   return NextResponse.json({
-    slug,
-    url: `${base}/s/${slug}`,
+    slug: site.slug,
+    url: `${base}/s/${site.slug}`,
     pages: files.length,
-    expiresAt: expiresAt.toISOString(),
+    expiresAt: new Date(site.expires_at).toISOString(),
   });
-}
-
-async function uniqueSlug(): Promise<string> {
-  for (let i = 0; i < 8; i++) {
-    const candidate = generateSlug();
-    const existing = await query(
-      "SELECT 1 FROM sites WHERE slug = $1 AND deleted_at IS NULL",
-      [candidate],
-    );
-    if (existing.length === 0) return candidate;
-  }
-  // Extremely unlikely fallback.
-  return `${generateSlug()}-${Date.now().toString(36)}`;
-}
-
-function parseEmails(raw: string): string[] {
-  return Array.from(
-    new Set(
-      raw
-        .split(/[\s,;]+/)
-        .map((e) => e.trim().toLowerCase())
-        .filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)),
-    ),
-  );
 }

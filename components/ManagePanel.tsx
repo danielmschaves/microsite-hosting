@@ -13,6 +13,7 @@ import {
   X,
   Eye,
   Users,
+  Lock,
   FileCode2,
   Trash2,
   ArchiveRestore,
@@ -25,7 +26,9 @@ const TTL_LABEL: Record<string, string> = {
   "24h": "24 hours",
   "7d": "7 days",
   "30d": "30 days",
+  "90d": "90 days",
 };
+const ALL_TTLS = ["24h", "7d", "30d", "90d"] as const;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 export interface ManagedSite {
@@ -39,6 +42,8 @@ export interface ManagedSite {
   createdAt: string;
   trashed: boolean;
   indexName: string;
+  visibility: string;
+  workspaceName: string | null;
 }
 
 export interface ManagedStats {
@@ -66,19 +71,26 @@ export function ManagePanel({
   viewers: initialViewers,
   stats,
   files,
+  allowedTtls = ["24h", "7d"],
 }: {
   site: ManagedSite;
   viewers: string[];
   stats: ManagedStats;
   files: { name: string; size: number }[];
+  allowedTtls?: string[];
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const [ttl, setTtl] = useState(site.ttlPreset in TTL_LABEL ? site.ttlPreset : "7d");
+  const [ttl, setTtl] = useState(
+    allowedTtls.includes(site.ttlPreset)
+      ? site.ttlPreset
+      : allowedTtls[allowedTtls.length - 1] || "7d",
+  );
   const [slugDraft, setSlugDraft] = useState(site.slug);
+  const [visibility, setVisibility] = useState(site.visibility);
   const [viewers, setViewers] = useState(initialViewers);
   const [viewerInput, setViewerInput] = useState("");
   const [copied, setCopied] = useState(false);
@@ -289,12 +301,22 @@ export function ManagePanel({
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <div className="seg-group" style={{ flex: 1 }}>
-            {(["24h", "7d", "30d"] as const).map((k) => (
-              <button key={k} className={`seg${ttl === k ? " active" : ""}`} onClick={() => setTtl(k)}>
-                <Clock size={14} />
-                {TTL_LABEL[k]}
-              </button>
-            ))}
+            {ALL_TTLS.map((k) => {
+              const locked = !allowedTtls.includes(k);
+              return (
+                <button
+                  key={k}
+                  className={`seg${ttl === k ? " active" : ""}`}
+                  disabled={locked}
+                  style={locked ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                  title={locked ? "Longer TTLs require the Team plan" : undefined}
+                  onClick={() => setTtl(k)}
+                >
+                  <Clock size={14} />
+                  {TTL_LABEL[k]}
+                </button>
+              );
+            })}
           </div>
           <button onClick={saveTtl} disabled={busy !== null} className="btn btn-primary">
             <Check size={14} />
@@ -328,7 +350,54 @@ export function ManagePanel({
         </div>
       </div>
 
+      {/* visibility */}
+      <div className="card" style={{ padding: 24, marginBottom: 18 }}>
+        <div style={{ font: "700 15px/1 var(--font-ui)", color: "var(--text)", marginBottom: 5 }}>Who can view</div>
+        <div style={{ font: "400 12.5px/1.5 var(--font-ui)", color: "var(--text-muted)", marginBottom: 16 }}>
+          {site.workspaceName
+            ? `This site lives in the "${site.workspaceName}" workspace.`
+            : "Personal site — move-to-workspace is not supported yet; pick the audience below."}
+        </div>
+        <div className="seg-group">
+          {(
+            [
+              ["only_me", "Only me", Lock],
+              ["allowlist", "Specific people", Mail],
+              ["team", "Whole team", Users],
+            ] as const
+          ).map(([value, label, Icon]) => {
+            const disabled = value === "team" && !site.workspaceName;
+            return (
+              <button
+                key={value}
+                className={`seg${visibility === value ? " active" : ""}`}
+                disabled={disabled || busy !== null}
+                style={disabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                title={disabled ? "Team visibility requires a workspace site" : undefined}
+                onClick={() => {
+                  setVisibility(value);
+                  call(
+                    "visibility",
+                    () =>
+                      fetch(`/api/sites/${site.id}`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ visibility: value }),
+                      }),
+                    "Visibility updated.",
+                  );
+                }}
+              >
+                <Icon size={14} />
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* viewers */}
+      {visibility === "allowlist" && (
       <div className="card" style={{ padding: 24, marginBottom: 18 }}>
         <div style={{ font: "700 15px/1 var(--font-ui)", color: "var(--text)", marginBottom: 5 }}>Allowed viewers</div>
         <div style={{ font: "400 12.5px/1.5 var(--font-ui)", color: "var(--text-muted)", marginBottom: 16 }}>
@@ -371,6 +440,7 @@ export function ManagePanel({
           </button>
         </div>
       </div>
+      )}
 
       {/* pages */}
       {files.length > 0 && (
@@ -450,7 +520,7 @@ function Stat({
     <div style={{ padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 7, color: "var(--text-subtle)", marginBottom: 8 }}>
         {icon}
-        <span style={{ font: "600 11px/1 var(--font-ui)" }}>{label}</span>
+        <span className="mb-mono" style={{ font: "600 10.5px/1 var(--font-mono)", letterSpacing: ".12em", textTransform: "uppercase" }}>{label}</span>
       </div>
       <div style={{ font: "800 19px/1 var(--font-ui)", color: "var(--text)" }}>{value}</div>
     </div>

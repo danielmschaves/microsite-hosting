@@ -23,6 +23,8 @@ import {
   FileCode2,
   Settings2,
   ArchiveRestore,
+  AlertTriangle,
+  SlidersHorizontal,
 } from "lucide-react";
 
 export interface SiteView {
@@ -36,6 +38,8 @@ export interface SiteView {
   viewersLabel: string;
   views: number;
   lastViewedAt: string | null;
+  allowedTtls: string[];
+  visibility: string;
 }
 
 export interface TrashView {
@@ -45,13 +49,26 @@ export interface TrashView {
   purgeAt: string;
 }
 
+export interface TeamSiteView {
+  id: string;
+  slug: string;
+  url: string;
+  owner: string;
+  sizeBytes: number;
+  pageCount: number;
+  expiresAt: string;
+  workspaceName: string;
+}
+
 type State = "fresh" | "expiring" | "expired";
 
 const TTL_LABEL: Record<string, string> = {
   "24h": "24 hours",
   "7d": "7 days",
   "30d": "30 days",
+  "90d": "90 days",
 };
+const ALL_TTLS = ["24h", "7d", "30d", "90d"] as const;
 
 function sizeLabel(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -86,15 +103,22 @@ const CD_CONF: Record<State, { color: string; Icon: typeof Clock }> = {
 export function SitesView({
   sites,
   trash,
+  teamSites = [],
 }: {
   sites: SiteView[];
   trash: TrashView[];
+  teamSites?: TeamSiteView[];
 }) {
   const router = useRouter();
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [view, setView] = useState<"grid" | "list">("grid");
   const [q, setQ] = useState("");
-  const [toast, setToast] = useState<string | null>(null);
+  const [visFilter, setVisFilter] = useState<"all" | "only_me" | "allowlist" | "team">("all");
+  const [toast, setToast] = useState<{
+    title: string;
+    detail: string;
+    tone: "accent" | "danger";
+  } | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [extendId, setExtendId] = useState<string | null>(null);
 
@@ -119,20 +143,45 @@ export function SitesView({
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    if (!needle) return sites;
-    return sites.filter((s) => s.slug.toLowerCase().includes(needle));
-  }, [sites, q]);
+    return sites.filter(
+      (s) =>
+        (visFilter === "all" || s.visibility === visFilter) &&
+        (!needle || s.slug.toLowerCase().includes(needle)),
+    );
+  }, [sites, q, visFilter]);
 
-  async function copy(site: SiteView) {
+  const FILTER_ORDER = ["all", "only_me", "allowlist", "team"] as const;
+  const FILTER_LABEL: Record<(typeof FILTER_ORDER)[number], string> = {
+    all: "All",
+    only_me: "Only me",
+    allowlist: "Allowlist",
+    team: "Team",
+  };
+  const cycleFilter = () =>
+    setVisFilter(
+      (f) => FILTER_ORDER[(FILTER_ORDER.indexOf(f) + 1) % FILTER_ORDER.length],
+    );
+
+  async function copyUrl(url: string) {
     try {
-      await navigator.clipboard.writeText(site.url);
-      setToast("Link copied to clipboard");
-      setTimeout(() => setToast(null), 2000);
+      await navigator.clipboard.writeText(url);
+      setToast({
+        title: "Link copied",
+        detail: "Private URL copied to clipboard.",
+        tone: "accent",
+      });
+      setTimeout(() => setToast(null), 2200);
     } catch {
-      setToast("Copy failed — select the URL manually");
+      setToast({
+        title: "Copy failed",
+        detail: "Select the URL manually.",
+        tone: "danger",
+      });
       setTimeout(() => setToast(null), 2500);
     }
   }
+
+  const copy = (site: SiteView) => copyUrl(site.url);
 
   const deleteSite = sites.find((s) => s.id === deleteId) || null;
   const extendSite = sites.find((s) => s.id === extendId) || null;
@@ -187,19 +236,43 @@ export function SitesView({
                 style={{ paddingLeft: 34 }}
               />
             </div>
-            <div style={{ display: "flex", gap: 3, padding: 3, borderRadius: 9, background: "var(--surface-2)", border: "1px solid var(--border)" }}>
-              <ViewBtn active={view === "grid"} onClick={() => setViewPersist("grid")} label="grid">
-                <LayoutGrid size={15} />
-              </ViewBtn>
-              <ViewBtn active={view === "list"} onClick={() => setViewPersist("list")} label="list">
-                <List size={15} />
-              </ViewBtn>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <button
+                onClick={cycleFilter}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 7,
+                  padding: "8px 12px",
+                  borderRadius: "var(--r-md)",
+                  font: "600 12.5px/1 var(--font-ui)",
+                  color: visFilter === "all" ? "var(--text-muted)" : "var(--text)",
+                  background: visFilter === "all" ? "var(--surface-2)" : "var(--accent-soft)",
+                  border: `1px solid ${visFilter === "all" ? "var(--border)" : "var(--accent-border)"}`,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+                title="Filter by visibility"
+              >
+                <SlidersHorizontal size={14} />
+                {FILTER_LABEL[visFilter]}
+              </button>
+              <div style={{ display: "flex", gap: 3, padding: 3, borderRadius: 9, background: "var(--surface-2)", border: "1px solid var(--border)" }}>
+                <ViewBtn active={view === "grid"} onClick={() => setViewPersist("grid")} label="grid">
+                  <LayoutGrid size={15} />
+                </ViewBtn>
+                <ViewBtn active={view === "list"} onClick={() => setViewPersist("list")} label="list">
+                  <List size={15} />
+                </ViewBtn>
+              </div>
             </div>
           </div>
 
           {filtered.length === 0 ? (
             <p style={{ font: "400 13.5px/1 var(--font-ui)", color: "var(--text-muted)" }}>
-              No sites match “{q}”.
+              {q.trim()
+                ? `No sites match “${q}”.`
+                : `No ${FILTER_LABEL[visFilter].toLowerCase()} sites.`}
             </p>
           ) : view === "grid" ? (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(320px,1fr))", gap: 18 }}>
@@ -232,11 +305,15 @@ export function SitesView({
         </>
       )}
 
+      {teamSites.length > 0 && (
+        <TeamSitesSection teamSites={teamSites} nowMs={nowMs} onCopy={(u) => copyUrl(u)} />
+      )}
+
       {trash.length > 0 && (
         <TrashSection trash={trash} nowMs={nowMs} onChanged={() => router.refresh()} />
       )}
 
-      {toast && <Toast message={toast} />}
+      {toast && <Toast title={toast.title} detail={toast.detail} tone={toast.tone} />}
 
       {deleteSite && (
         <DeleteModal
@@ -610,6 +687,118 @@ function EmptyState() {
         <UploadCloud size={16} />
         Upload your first site
       </Link>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginTop: 44, width: "100%", maxWidth: 640 }}>
+        <EmptyStep n="01" icon={<FileCode2 size={16} style={{ color: "var(--accent)" }} />} title="Drop an .html file" sub="Self-contained page, up to 25 MB." />
+        <EmptyStep n="02" icon={<Users size={16} style={{ color: "var(--accent)" }} />} title="Set TTL & allowlist" sub="Choose who sees it and how long." />
+        <EmptyStep n="03" icon={<Link2 size={16} style={{ color: "var(--accent)" }} />} title="Share the private link" sub="Viewers sign in to open it." />
+      </div>
+    </div>
+  );
+}
+
+function EmptyStep({
+  n,
+  icon,
+  title,
+  sub,
+}: {
+  n: string;
+  icon: React.ReactNode;
+  title: string;
+  sub: string;
+}) {
+  return (
+    <div style={{ textAlign: "left", padding: 16, borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        {icon}
+        <span className="mb-mono" style={{ font: "600 10px/1 var(--font-mono)", color: "var(--text-subtle)" }}>{n}</span>
+      </div>
+      <div style={{ font: "600 13px/1.3 var(--font-ui)", color: "var(--text)" }}>{title}</div>
+      <div style={{ font: "400 11.5px/1.4 var(--font-ui)", color: "var(--text-muted)", marginTop: 4 }}>{sub}</div>
+    </div>
+  );
+}
+
+function TeamSitesSection({
+  teamSites,
+  nowMs,
+  onCopy,
+}: {
+  teamSites: TeamSiteView[];
+  nowMs: number;
+  onCopy: (url: string) => void;
+}) {
+  return (
+    <div style={{ marginTop: 34 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <Users size={15} style={{ color: "var(--text-subtle)" }} />
+        <h2 style={{ margin: 0, font: "700 15px/1 var(--font-ui)", color: "var(--text-muted)" }}>
+          Shared with your teams ({teamSites.length})
+        </h2>
+      </div>
+      <div className="card" style={{ overflow: "hidden" }}>
+        {teamSites.map((t, i) => {
+          const expiresMs = new Date(t.expiresAt).getTime();
+          const st = computeState(expiresMs, nowMs);
+          const { color, Icon } = CD_CONF[st];
+          return (
+            <div
+              key={t.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+                padding: "12px 16px",
+                borderTop: i === 0 ? "none" : "1px solid var(--border)",
+              }}
+            >
+              <div
+                style={{
+                  width: 52,
+                  height: 38,
+                  borderRadius: 8,
+                  flex: "none",
+                  backgroundImage:
+                    "repeating-linear-gradient(135deg, var(--surface-3) 0 6px, var(--surface-2) 6px 12px)",
+                  border: "1px solid var(--border)",
+                }}
+              />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <a href={t.url} target="_blank" rel="noreferrer" style={{ font: "700 13.5px/1.1 var(--font-ui)", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>
+                  {t.slug}
+                </a>
+                <div className="mb-mono" style={{ font: "500 11px/1 var(--font-mono)", color: "var(--text-subtle)", marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {t.workspaceName} · by {t.owner}
+                  {t.pageCount > 1 ? ` · ${t.pageCount} pages` : ""}
+                </div>
+              </div>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "5px 10px",
+                  borderRadius: 999,
+                  background: `color-mix(in srgb, ${color} 15%, var(--bg))`,
+                  border: `1px solid color-mix(in srgb, ${color} 40%, transparent)`,
+                  font: "600 11px/1 var(--font-ui)",
+                  whiteSpace: "nowrap",
+                  flex: "none",
+                }}
+              >
+                <Icon size={12} style={{ color }} />
+                <span className="mb-mono" style={{ color }}>
+                  {countdownLabel(expiresMs, nowMs)}
+                </span>
+              </span>
+              <button onClick={() => onCopy(t.url)} className="icon-btn" aria-label="Copy link" style={{ width: 32, height: 32, background: "transparent" }}>
+                <Copy size={14} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -723,7 +912,17 @@ function TrashSection({
   );
 }
 
-function Toast({ message }: { message: string }) {
+/** Toast per the design system: left semantic border, icon, title + detail. */
+function Toast({
+  title,
+  detail,
+  tone,
+}: {
+  title: string;
+  detail: string;
+  tone: "accent" | "danger";
+}) {
+  const color = `var(--${tone})`;
   return (
     <div
       style={{
@@ -732,33 +931,29 @@ function Toast({ message }: { message: string }) {
         bottom: 22,
         zIndex: 60,
         display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "12px 15px",
-        borderRadius: "var(--r-md)",
-        background: "var(--surface-1)",
-        border: "1px solid var(--border-strong)",
+        gap: 12,
+        alignItems: "flex-start",
+        padding: "13px 15px",
+        borderRadius: 12,
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+        borderLeft: `3px solid ${color}`,
         boxShadow: "var(--shadow-2)",
-        color: "var(--text)",
-        font: "600 13px/1 var(--font-ui)",
+        maxWidth: 340,
         animation: "mb-toast-in .2s ease",
       }}
     >
-      <span
-        style={{
-          width: 22,
-          height: 22,
-          borderRadius: 6,
-          background: "var(--success-soft)",
-          border: "1px solid var(--success-border)",
-          display: "grid",
-          placeItems: "center",
-          color: "var(--success)",
-        }}
-      >
-        <Check size={13} />
-      </span>
-      {message}
+      {tone === "danger" ? (
+        <AlertTriangle size={18} style={{ color, flex: "none", marginTop: 1 }} />
+      ) : (
+        <Link2 size={18} style={{ color, flex: "none", marginTop: 1 }} />
+      )}
+      <div>
+        <div style={{ font: "600 13.5px/1.2 var(--font-ui)", color: "var(--text)" }}>{title}</div>
+        <div style={{ font: "400 12.5px/1.4 var(--font-ui)", color: "var(--text-muted)", marginTop: 3 }}>
+          {detail}
+        </div>
+      </div>
     </div>
   );
 }
@@ -860,7 +1055,11 @@ function ExtendModal({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [ttl, setTtl] = useState(site.ttlPreset in TTL_LABEL ? site.ttlPreset : "7d");
+  const [ttl, setTtl] = useState(
+    site.allowedTtls.includes(site.ttlPreset)
+      ? site.ttlPreset
+      : site.allowedTtls[site.allowedTtls.length - 1] || "7d",
+  );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -897,12 +1096,22 @@ function ExtendModal({
       </div>
       <label className="lbl">New lifetime</label>
       <div className="seg-group" style={{ marginBottom: 18 }}>
-        {(["24h", "7d", "30d"] as const).map((k) => (
-          <button key={k} className={`seg${ttl === k ? " active" : ""}`} onClick={() => setTtl(k)}>
-            <Clock size={14} />
-            {TTL_LABEL[k]}
-          </button>
-        ))}
+        {ALL_TTLS.map((k) => {
+          const locked = !site.allowedTtls.includes(k);
+          return (
+            <button
+              key={k}
+              className={`seg${ttl === k ? " active" : ""}`}
+              disabled={locked}
+              style={locked ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+              title={locked ? "Longer TTLs require the Team plan" : undefined}
+              onClick={() => setTtl(k)}
+            >
+              <Clock size={14} />
+              {TTL_LABEL[k]}
+            </button>
+          );
+        })}
       </div>
       {err && <div style={{ marginBottom: 14, color: "var(--danger)", font: "500 12.5px/1.4 var(--font-ui)" }}>{err}</div>}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>

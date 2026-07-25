@@ -1,32 +1,14 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
-import { query, type SiteRow } from "@/lib/db";
+import { query } from "@/lib/db";
+import { authorizeSiteManage } from "@/lib/authz";
 import { track } from "@/lib/events";
 
 export const runtime = "nodejs";
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
-/** Load the site and verify the session user owns it. */
-async function authorize(id: string) {
-  const session = await auth();
-  const email = session?.user?.email;
-  if (!email) {
-    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
-  }
-  const rows = await query<SiteRow>(
-    "SELECT * FROM sites WHERE id = $1 AND purged_at IS NULL",
-    [id],
-  );
-  const site = rows[0];
-  if (!site) {
-    return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) };
-  }
-  if (site.owner_email.toLowerCase() !== email.toLowerCase()) {
-    return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
-  }
-  return { site, email };
-}
+/** Owner-only guard (allowlist stays the owner's to manage). */
+const authorize = (id: string) => authorizeSiteManage(id);
 
 // GET — list allowlisted viewer emails.
 export async function GET(

@@ -100,12 +100,52 @@ Then **Deployments → ⋯ → Redeploy**. A redeploy is required:
   account → 403
 - Function logs show `[startup] database schema ready` / `storage bucket ready`
 
+## Optional services (v1.0 features)
+
+All optional — absent env vars degrade gracefully (no email → invite copy-links;
+no Stripe → everything is free tier).
+
+**Resend (team invite emails):** create an API key at https://resend.com, verify
+a sender domain, set `RESEND_API_KEY` + `EMAIL_FROM` (e.g.
+`MicroBuild <invites@yourdomain.com>`).
+
+**Stripe (Team plan billing):**
+1. Create a product "MicroBuild Team" with a recurring per-seat price
+   (~$5/user/month) → copy the price id → `STRIPE_TEAM_PRICE_ID`.
+2. `STRIPE_SECRET_KEY` from API keys.
+3. Add a webhook endpoint `https://YOUR-DOMAIN/api/stripe/webhook` listening to:
+   `checkout.session.completed`, `customer.subscription.created`,
+   `customer.subscription.updated`, `customer.subscription.deleted`,
+   `invoice.payment_failed` → copy the signing secret → `STRIPE_WEBHOOK_SECRET`.
+4. Local testing: `stripe listen --forward-to localhost:3000/api/stripe/webhook`
+   (use the CLI's printed webhook secret), or skip Stripe entirely with
+   `PLAN_FAKE_TEAM=true` (dev-only; hard-blocked in production).
+
+**S3 bucket CORS (required for browser uploads):** large uploads go straight
+from the browser to S3 via presigned POSTs, which needs CORS on the bucket.
+The app attempts to set it on boot (needs `s3:PutBucketCORS` on the IAM user);
+otherwise apply it once manually:
+
+```bash
+aws s3api put-bucket-cors --bucket YOUR-BUCKET --cors-configuration '{
+  "CORSRules": [{
+    "AllowedMethods": ["POST"],
+    "AllowedOrigins": ["https://YOUR-DOMAIN"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3000
+  }]
+}'
+```
+
+MinIO (local) allows cross-origin by default — no setup needed.
+
 ## Platform limits worth knowing
 
-- **Upload size:** Vercel serverless functions cap request bodies at ~4.5 MB.
-  Uploads above that get a platform-level 413 regardless of `MAX_UPLOAD_BYTES`.
-  Fine for typical self-contained HTML; the v1.0 fix is pre-signed S3 upload
-  URLs (PRD §9) so files bypass the function entirely.
+- **Upload size:** uploads go browser→S3 via presigned POSTs, so Vercel's
+  ~4.5 MB function body cap doesn't apply — plan limits (25 MB free / 250 MB
+  team) govern. The multipart fallback route (`/api/upload`) stays capped at
+  `SERVER_UPLOAD_MAX_BYTES` (default 4 MB).
 - **Cron:** `vercel.json` schedules cleanup daily at 03:00 UTC (Hobby tier
   allows only daily crons). Expired sites stop being *served* at the exact
   expiry moment regardless — the daily job only lags the storage deletion.

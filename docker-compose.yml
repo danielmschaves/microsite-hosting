@@ -54,13 +54,24 @@ services:
       AUTH_GITHUB_SECRET: ${AUTH_GITHUB_SECRET:-}
       DATABASE_URL: postgres://shipsite:shipsite@postgres:5432/shipsite
       S3_ENDPOINT: http://minio:9000
+      # Presigned upload URLs must be reachable from the HOST browser, not the
+      # container network — hence the separate public endpoint.
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
       S3_REGION: us-east-1
       S3_BUCKET: shipsite
       S3_ACCESS_KEY_ID: minioadmin
       S3_SECRET_ACCESS_KEY: minioadmin
       NEXT_PUBLIC_BASE_URL: ${NEXT_PUBLIC_BASE_URL:-http://localhost:3000}
       CRON_SECRET: ${CRON_SECRET:-dev-insecure-cron-secret}
-      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-262144000}
+      # v1.0 — all optional; absence = graceful degradation
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_TEAM_PRICE_ID: ${STRIPE_TEAM_PRICE_ID:-}
+      # Treat every workspace as Team plan without Stripe (dev only; blocked in prod)
+      PLAN_FAKE_TEAM: ${PLAN_FAKE_TEAM:-false}
     ports:
       - "3000:3000"
 

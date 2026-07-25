@@ -23,6 +23,19 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   return res.rows;
 }
 
+export interface WorkspaceRow {
+  id: string;
+  name: string;
+  created_by: string;
+  plan: string;
+  max_ttl_preset: string | null;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+  subscription_status: string | null;
+  seats: number;
+  created_at: Date;
+}
+
 export interface SiteRow {
   id: string;
   slug: string;
@@ -37,6 +50,8 @@ export interface SiteRow {
   created_at: Date;
   deleted_at: Date | null;
   purged_at: Date | null;
+  workspace_id: string | null;
+  visibility: string; // 'only_me' | 'allowlist' | 'team'
 }
 
 // Idempotent schema creation. Runs on server startup (see instrumentation.ts)
@@ -85,6 +100,64 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS events_site_idx ON events (site_id, type, created_at);
+
+-- Teams / workspaces (v1.0) -------------------------------------------------
+CREATE TABLE IF NOT EXISTS workspaces (
+  id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name                   TEXT NOT NULL,
+  created_by             TEXT NOT NULL,
+  plan                   TEXT NOT NULL DEFAULT 'free',
+  max_ttl_preset         TEXT,
+  stripe_customer_id     TEXT,
+  stripe_subscription_id TEXT,
+  subscription_status    TEXT,
+  seats                  INTEGER NOT NULL DEFAULT 0,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS workspace_members (
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  email        TEXT NOT NULL,
+  role         TEXT NOT NULL DEFAULT 'member',
+  joined_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, email)
+);
+CREATE INDEX IF NOT EXISTS workspace_members_email_idx ON workspace_members (email);
+
+CREATE TABLE IF NOT EXISTS workspace_invites (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  email        TEXT NOT NULL,
+  role         TEXT NOT NULL DEFAULT 'member',
+  token        TEXT NOT NULL UNIQUE,
+  invited_by   TEXT NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at   TIMESTAMPTZ NOT NULL,
+  accepted_at  TIMESTAMPTZ
+);
+
+ALTER TABLE events ADD COLUMN IF NOT EXISTS workspace_id UUID;
+CREATE INDEX IF NOT EXISTS events_workspace_idx ON events (workspace_id, created_at);
+
+-- Team sites (v1.0 phase 2): NULL workspace_id = personal site. 'allowlist'
+-- default matches pre-existing semantics (owner + site_viewers) exactly.
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces(id);
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'allowlist';
+CREATE INDEX IF NOT EXISTS sites_workspace_idx ON sites (workspace_id) WHERE deleted_at IS NULL;
+
+-- Pre-signed browser->S3 uploads (v1.0 phase 4). The prefix becomes the
+-- site's final prefix at completion — no copy step. Stale incomplete rows are
+-- purged by the cleanup cron.
+CREATE TABLE IF NOT EXISTS pending_uploads (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_email  TEXT NOT NULL,
+  workspace_id UUID,
+  s3_prefix    TEXT NOT NULL,
+  files        JSONB NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS pending_uploads_stale_idx ON pending_uploads (created_at) WHERE completed_at IS NULL;
 `;
 
 export async function migrate(): Promise<void> {

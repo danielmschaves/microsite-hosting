@@ -1,9 +1,14 @@
 import { notFound, redirect } from "next/navigation";
 import { auth } from "@/auth";
-import { query, type SiteRow } from "@/lib/db";
+import { query, type SiteRow, type WorkspaceRow } from "@/lib/db";
 import { listPrefix, type StoredFile } from "@/lib/storage";
 import { statsForSites } from "@/lib/events";
-import { FREE_SITE_LIMIT, FREE_STORAGE_BYTES } from "@/lib/plan";
+import {
+  FREE_SITE_LIMIT,
+  FREE_STORAGE_BYTES,
+  planForWorkspace,
+  allowedTtlPresets,
+} from "@/lib/plan";
 import { AppBar } from "@/components/AppBar";
 import { ManagePanel } from "@/components/ManagePanel";
 
@@ -55,6 +60,18 @@ export default async function ManageSitePage({
   const base = process.env.NEXT_PUBLIC_BASE_URL || "";
   const indexName = site.index_key.slice(site.s3_prefix.length);
 
+  const workspace: WorkspaceRow | null = site.workspace_id
+    ? (
+        await query<WorkspaceRow>("SELECT * FROM workspaces WHERE id = $1", [
+          site.workspace_id,
+        ])
+      )[0] ?? null
+    : null;
+  const allowedTtls = allowedTtlPresets(
+    planForWorkspace(workspace),
+    workspace?.max_ttl_preset ?? null,
+  );
+
   return (
     <>
       <AppBar
@@ -78,7 +95,10 @@ export default async function ManageSitePage({
           createdAt: new Date(site.created_at).toISOString(),
           trashed: site.deleted_at !== null,
           indexName,
+          visibility: site.visibility,
+          workspaceName: workspace?.name ?? null,
         }}
+        allowedTtls={allowedTtls}
         viewers={viewerRows.map((v) => v.viewer_email)}
         stats={stats}
         files={files}
