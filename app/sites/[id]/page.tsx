@@ -78,6 +78,15 @@ export default async function ManageSitePage({
           createdAt: new Date(site.created_at).toISOString(),
           trashed: site.deleted_at !== null,
           indexName,
+          visibility: site.visibility,
+          workspaceName: site.workspace_id
+            ? (
+                await query<{ name: string }>(
+                  "SELECT name FROM workspaces WHERE id = $1",
+                  [site.workspace_id],
+                )
+              )[0]?.name ?? null
+            : null,
         }}
         viewers={viewerRows.map((v) => v.viewer_email)}
         stats={stats}

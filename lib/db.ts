@@ -50,6 +50,8 @@ export interface SiteRow {
   created_at: Date;
   deleted_at: Date | null;
   purged_at: Date | null;
+  workspace_id: string | null;
+  visibility: string; // 'only_me' | 'allowlist' | 'team'
 }
 
 // Idempotent schema creation. Runs on server startup (see instrumentation.ts)
@@ -136,6 +138,12 @@ CREATE TABLE IF NOT EXISTS workspace_invites (
 
 ALTER TABLE events ADD COLUMN IF NOT EXISTS workspace_id UUID;
 CREATE INDEX IF NOT EXISTS events_workspace_idx ON events (workspace_id, created_at);
+
+-- Team sites (v1.0 phase 2): NULL workspace_id = personal site. 'allowlist'
+-- default matches pre-existing semantics (owner + site_viewers) exactly.
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces(id);
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'allowlist';
+CREATE INDEX IF NOT EXISTS sites_workspace_idx ON sites (workspace_id) WHERE deleted_at IS NULL;
 `;
 
 export async function migrate(): Promise<void> {

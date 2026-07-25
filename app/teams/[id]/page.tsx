@@ -51,6 +51,43 @@ export default async function TeamPage({
   );
   const usedBytes = mySites.reduce((s, r) => s + Number(r.size_bytes), 0);
 
+  // Workspace sites (live) for the Usage + Sites sections.
+  const wsSites = await query<{
+    id: string;
+    slug: string;
+    owner_email: string;
+    size_bytes: string;
+    visibility: string;
+    expires_at: Date;
+  }>(
+    `SELECT id, slug, owner_email, size_bytes, visibility, expires_at
+       FROM sites
+      WHERE workspace_id = $1 AND deleted_at IS NULL
+      ORDER BY created_at DESC`,
+    [id],
+  );
+
+  // Audit entries (admins only) straight from events.
+  const audit =
+    myRole === "member"
+      ? []
+      : await query<{
+          type: string;
+          actor: string | null;
+          meta: Record<string, unknown>;
+          created_at: Date;
+          slug: string | null;
+        }>(
+          `SELECT e.type, e.actor, e.meta, e.created_at, s.slug
+             FROM events e LEFT JOIN sites s ON s.id = e.site_id
+            WHERE e.workspace_id = $1
+              AND e.type <> 'site_view'
+              AND e.created_at > now() - interval '30 days'
+            ORDER BY e.created_at DESC
+            LIMIT 100`,
+          [id],
+        );
+
   return (
     <>
       <AppBar
@@ -81,6 +118,21 @@ export default async function TeamPage({
           email: i.email,
           role: i.role,
           expiresAt: new Date(i.expires_at).toISOString(),
+        }))}
+        sites={wsSites.map((s) => ({
+          id: s.id,
+          slug: s.slug,
+          owner: s.owner_email,
+          sizeBytes: Number(s.size_bytes),
+          visibility: s.visibility,
+          expiresAt: new Date(s.expires_at).toISOString(),
+        }))}
+        audit={audit.map((a) => ({
+          type: a.type,
+          actor: a.actor,
+          slug: a.slug,
+          meta: a.meta,
+          at: new Date(a.created_at).toISOString(),
         }))}
       />
     </>

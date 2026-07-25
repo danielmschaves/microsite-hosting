@@ -4,7 +4,7 @@ import { query } from "@/lib/db";
 import { statsForSites } from "@/lib/events";
 import { FREE_SITE_LIMIT, FREE_STORAGE_BYTES, TRASH_DAYS } from "@/lib/plan";
 import { AppBar } from "@/components/AppBar";
-import { SitesView, type SiteView, type TrashView } from "@/components/SitesView";
+import { SitesView, type SiteView, type TrashView, type TeamSiteView } from "@/components/SitesView";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +47,29 @@ export default async function Dashboard() {
     [email],
   );
 
+  // Team sites shared with me (visibility='team' in my workspaces, not mine).
+  const teamRows = await query<{
+    id: string;
+    slug: string;
+    owner_email: string;
+    size_bytes: string;
+    page_count: number;
+    expires_at: Date;
+    workspace_name: string;
+  }>(
+    `SELECT s.id, s.slug, s.owner_email, s.size_bytes, s.page_count, s.expires_at,
+            w.name AS workspace_name
+       FROM sites s
+       JOIN workspaces w ON w.id = s.workspace_id
+       JOIN workspace_members m ON m.workspace_id = s.workspace_id AND m.email = $1
+      WHERE s.visibility = 'team'
+        AND s.deleted_at IS NULL
+        AND s.expires_at > now()
+        AND lower(s.owner_email) <> $1
+      ORDER BY s.created_at DESC`,
+    [email.toLowerCase()],
+  );
+
   const stats = await statsForSites(rows.map((r) => r.id));
 
   const base = process.env.NEXT_PUBLIC_BASE_URL || "";
@@ -77,6 +100,17 @@ export default async function Dashboard() {
     ).toISOString(),
   }));
 
+  const teamSites: TeamSiteView[] = teamRows.map((r) => ({
+    id: r.id,
+    slug: r.slug,
+    url: `${base}/s/${r.slug}`,
+    owner: r.owner_email,
+    sizeBytes: Number(r.size_bytes),
+    pageCount: Number(r.page_count),
+    expiresAt: new Date(r.expires_at).toISOString(),
+    workspaceName: r.workspace_name,
+  }));
+
   const usedBytes = sites.reduce((sum, s) => sum + s.sizeBytes, 0);
 
   return (
@@ -90,7 +124,7 @@ export default async function Dashboard() {
         siteLimit={FREE_SITE_LIMIT}
         storageLimitBytes={FREE_STORAGE_BYTES}
       />
-      <SitesView sites={sites} trash={trash} />
+      <SitesView sites={sites} trash={trash} teamSites={teamSites} />
     </>
   );
 }

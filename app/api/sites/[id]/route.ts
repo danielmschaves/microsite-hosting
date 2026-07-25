@@ -1,44 +1,25 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
-import { query, type SiteRow } from "@/lib/db";
+import { query } from "@/lib/db";
 import { deletePrefix } from "@/lib/storage";
 import { expiresAtFrom, isTtlPreset } from "@/lib/ttl";
 import { normalizeSlug } from "@/lib/slug";
+import { authorizeSiteManage, isVisibility } from "@/lib/authz";
 import { track } from "@/lib/events";
 
 export const runtime = "nodejs";
 
-/** Load the site and verify the session user owns it. */
-async function authorize(id: string) {
-  const session = await auth();
-  const email = session?.user?.email;
-  if (!email) {
-    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
-  }
-  const rows = await query<SiteRow>("SELECT * FROM sites WHERE id = $1", [id]);
-  const site = rows[0];
-  if (!site || site.purged_at) {
-    return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) };
-  }
-  if (site.owner_email.toLowerCase() !== email.toLowerCase()) {
-    return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
-  }
-  return { site, email };
-}
-
 // DELETE — move to trash (default) or purge permanently (?permanent=true).
-// Trash keeps storage so the site is restorable for the trash window.
+// Owner always; workspace admins may trash/purge team-workspace sites.
 export async function DELETE(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const res = await authorize(id);
+  const res = await authorizeSiteManage(id, { allowWorkspaceAdmin: true });
   if ("error" in res) return res.error;
   const { site, email } = res;
 
-  const permanent =
-    new URL(req.url).searchParams.get("permanent") === "true";
+  const permanent = new URL(req.url).searchParams.get("permanent") === "true";
 
   if (permanent) {
     await deletePrefix(site.s3_prefix);
@@ -46,7 +27,12 @@ export async function DELETE(
       "UPDATE sites SET deleted_at = COALESCE(deleted_at, now()), purged_at = now() WHERE id = $1",
       [id],
     );
-    await track("site_purged", { siteId: id, actor: email, meta: { by: "owner" } });
+    await track("site_purged", {
+      siteId: id,
+      workspaceId: site.workspace_id ?? undefined,
+      actor: email,
+      meta: { by: res.role },
+    });
     return NextResponse.json({ ok: true, purged: true });
   }
 
@@ -54,28 +40,48 @@ export async function DELETE(
     return NextResponse.json({ ok: true, trashed: true }); // already in trash
   }
   await query("UPDATE sites SET deleted_at = now() WHERE id = $1", [id]);
-  await track("site_trashed", { siteId: id, actor: email, meta: { by: "owner" } });
+  await track("site_trashed", {
+    siteId: id,
+    workspaceId: site.workspace_id ?? undefined,
+    actor: email,
+    meta: { by: res.role },
+  });
   return NextResponse.json({ ok: true, trashed: true });
 }
 
-// PATCH — owner edits: { ttl }, { slug }, or { action: "restore" }.
+// PATCH — { ttl } | { slug } | { visibility } | { action: "restore" | "force_expire" }.
 export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const res = await authorize(id);
+  const body = await req.json().catch(() => ({}));
+
+  // Force-expire is the one owner-or-admin mutation besides trash: serving
+  // stops instantly (expires_at = now); the cron trashes it on its next run.
+  if (body?.action === "force_expire") {
+    const res = await authorizeSiteManage(id, { allowWorkspaceAdmin: true });
+    if ("error" in res) return res.error;
+    await query("UPDATE sites SET expires_at = now() WHERE id = $1", [id]);
+    await track("site_force_expired", {
+      siteId: id,
+      workspaceId: res.site.workspace_id ?? undefined,
+      actor: res.email,
+      meta: { by: res.role },
+    });
+    return NextResponse.json({ ok: true, forceExpired: true });
+  }
+
+  // Everything below is owner-only.
+  const res = await authorizeSiteManage(id);
   if ("error" in res) return res.error;
   const { site, email } = res;
-
-  const body = await req.json().catch(() => ({}));
 
   // --- restore from trash --------------------------------------------------
   if (body?.action === "restore") {
     if (!site.deleted_at) {
       return NextResponse.json({ error: "Site is not in trash" }, { status: 400 });
     }
-    // The slug may have been reused by a live site while this one was trashed.
     const clash = await query(
       "SELECT 1 FROM sites WHERE slug = $1 AND deleted_at IS NULL AND id <> $2",
       [site.slug, id],
@@ -86,7 +92,6 @@ export async function PATCH(
         { status: 409 },
       );
     }
-    // If the TTL lapsed while trashed, give the restored site a fresh 7 days.
     const expired = new Date(site.expires_at).getTime() <= Date.now();
     if (expired) {
       await query(
@@ -96,8 +101,37 @@ export async function PATCH(
     } else {
       await query("UPDATE sites SET deleted_at = NULL WHERE id = $1", [id]);
     }
-    await track("site_restored", { siteId: id, actor: email });
+    await track("site_restored", {
+      siteId: id,
+      workspaceId: site.workspace_id ?? undefined,
+      actor: email,
+    });
     return NextResponse.json({ ok: true, restored: true });
+  }
+
+  // --- visibility ----------------------------------------------------------
+  if (typeof body?.visibility === "string") {
+    const visibility = body.visibility;
+    if (!isVisibility(visibility)) {
+      return NextResponse.json(
+        { error: "visibility must be only_me, allowlist or team" },
+        { status: 400 },
+      );
+    }
+    if (visibility === "team" && !site.workspace_id) {
+      return NextResponse.json(
+        { error: "Team visibility requires the site to belong to a workspace" },
+        { status: 400 },
+      );
+    }
+    await query("UPDATE sites SET visibility = $1 WHERE id = $2", [visibility, id]);
+    await track("visibility_changed", {
+      siteId: id,
+      workspaceId: site.workspace_id ?? undefined,
+      actor: email,
+      meta: { from: site.visibility, to: visibility },
+    });
+    return NextResponse.json({ ok: true, visibility });
   }
 
   // --- rename slug ---------------------------------------------------------
@@ -122,6 +156,7 @@ export async function PATCH(
       await query("UPDATE sites SET slug = $1 WHERE id = $2", [slug, id]);
       await track("slug_renamed", {
         siteId: id,
+        workspaceId: site.workspace_id ?? undefined,
         actor: email,
         meta: { from: site.slug, to: slug },
       });
@@ -133,7 +168,7 @@ export async function PATCH(
   const ttl = String(body?.ttl || "");
   if (!isTtlPreset(ttl)) {
     return NextResponse.json(
-      { error: "Provide { ttl }, { slug } or { action: 'restore' }" },
+      { error: "Provide { ttl }, { slug }, { visibility } or { action }" },
       { status: 400 },
     );
   }
@@ -143,6 +178,11 @@ export async function PATCH(
     expiresAt,
     id,
   ]);
-  await track("ttl_extended", { siteId: id, actor: email, meta: { ttl } });
+  await track("ttl_extended", {
+    siteId: id,
+    workspaceId: site.workspace_id ?? undefined,
+    actor: email,
+    meta: { ttl },
+  });
   return NextResponse.json({ ok: true, expiresAt: expiresAt.toISOString() });
 }

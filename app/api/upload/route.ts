@@ -4,6 +4,8 @@ import { query, type SiteRow } from "@/lib/db";
 import { putObject } from "@/lib/storage";
 import { generateSlug, normalizeSlug } from "@/lib/slug";
 import { expiresAtFrom, isTtlPreset } from "@/lib/ttl";
+import { getMembership } from "@/lib/teams";
+import { isVisibility, type Visibility } from "@/lib/authz";
 import { track } from "@/lib/events";
 
 export const runtime = "nodejs";
@@ -41,9 +43,35 @@ export async function POST(req: Request) {
   const requestedSlug = String(form.get("slug") || "").trim();
   const requestedIndex = String(form.get("index") || "").trim();
   const viewersRaw = String(form.get("viewers") || "");
+  const workspaceId = String(form.get("workspaceId") || "").trim() || null;
+  const visibilityRaw = String(form.get("visibility") || "allowlist");
 
   if (rawFiles.length === 0) {
     return NextResponse.json({ error: "No file provided" }, { status: 400 });
+  }
+
+  // Destination + visibility validation.
+  if (!isVisibility(visibilityRaw)) {
+    return NextResponse.json(
+      { error: "visibility must be only_me, allowlist or team" },
+      { status: 400 },
+    );
+  }
+  const visibility: Visibility = visibilityRaw;
+  if (workspaceId) {
+    const membership = await getMembership(email, workspaceId).catch(() => null);
+    if (!membership) {
+      return NextResponse.json(
+        { error: "You are not a member of that workspace" },
+        { status: 403 },
+      );
+    }
+  }
+  if (visibility === "team" && !workspaceId) {
+    return NextResponse.json(
+      { error: "Team visibility requires a workspace destination" },
+      { status: 400 },
+    );
   }
   if (rawFiles.length > MAX_PAGES) {
     return NextResponse.json(
@@ -149,10 +177,10 @@ export async function POST(req: Request) {
   const expiresAt = expiresAtFrom(ttl);
   const inserted = await query<SiteRow>(
     `INSERT INTO sites
-       (slug, owner_email, s3_prefix, index_key, content_type, size_bytes, page_count, ttl_preset, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       (slug, owner_email, s3_prefix, index_key, content_type, size_bytes, page_count, ttl_preset, expires_at, workspace_id, visibility)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
-    [slug, email, s3Prefix, indexKey, "text/html", totalBytes, files.length, ttl, expiresAt],
+    [slug, email, s3Prefix, indexKey, "text/html", totalBytes, files.length, ttl, expiresAt, workspaceId, visibility],
   );
   const site = inserted[0];
 
@@ -168,8 +196,9 @@ export async function POST(req: Request) {
 
   await track("site_created", {
     siteId: site.id,
+    workspaceId: workspaceId ?? undefined,
     actor: email,
-    meta: { pages: files.length, ttl, bytes: totalBytes, viewers: viewers.length },
+    meta: { pages: files.length, ttl, bytes: totalBytes, viewers: viewers.length, visibility },
   });
 
   const base = process.env.NEXT_PUBLIC_BASE_URL || new URL(req.url).origin;

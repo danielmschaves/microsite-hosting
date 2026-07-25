@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { query, type SiteRow } from "@/lib/db";
 import { getObject } from "@/lib/storage";
+import { canViewSite } from "@/lib/authz";
 import { track } from "@/lib/events";
 
 export const runtime = "nodejs";
@@ -36,17 +37,11 @@ export async function GET(
     return new NextResponse("Not found or expired", { status: 404 });
   }
 
-  // 3. Authorize: owner always allowed; otherwise must be on the allowlist.
+  // 3. Authorize via the central policy (owner / allowlist / team visibility).
   const lower = email.toLowerCase();
   const isOwner = site.owner_email.toLowerCase() === lower;
-  if (!isOwner) {
-    const allowed = await query(
-      "SELECT 1 FROM site_viewers WHERE site_id = $1 AND lower(viewer_email) = $2",
-      [site.id, lower],
-    );
-    if (allowed.length === 0) {
-      return new NextResponse("Forbidden", { status: 403 });
-    }
+  if (!(await canViewSite(site, lower))) {
+    return new NextResponse("Forbidden", { status: 403 });
   }
 
   // 4. Resolve the object key. MVP stores a single index.html; sub-paths are
@@ -62,6 +57,7 @@ export async function GET(
   // First-party analytics: record the page view (never blocks serving).
   await track("site_view", {
     siteId: site.id,
+    workspaceId: site.workspace_id ?? undefined,
     actor: lower,
     meta: { path: subPath || "index", owner: isOwner },
   });

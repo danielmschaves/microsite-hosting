@@ -13,6 +13,7 @@ import {
   X,
   Eye,
   Users,
+  Lock,
   FileCode2,
   Trash2,
   ArchiveRestore,
@@ -39,6 +40,8 @@ export interface ManagedSite {
   createdAt: string;
   trashed: boolean;
   indexName: string;
+  visibility: string;
+  workspaceName: string | null;
 }
 
 export interface ManagedStats {
@@ -79,6 +82,7 @@ export function ManagePanel({
 
   const [ttl, setTtl] = useState(site.ttlPreset in TTL_LABEL ? site.ttlPreset : "7d");
   const [slugDraft, setSlugDraft] = useState(site.slug);
+  const [visibility, setVisibility] = useState(site.visibility);
   const [viewers, setViewers] = useState(initialViewers);
   const [viewerInput, setViewerInput] = useState("");
   const [copied, setCopied] = useState(false);
@@ -328,7 +332,54 @@ export function ManagePanel({
         </div>
       </div>
 
+      {/* visibility */}
+      <div className="card" style={{ padding: 24, marginBottom: 18 }}>
+        <div style={{ font: "700 15px/1 var(--font-ui)", color: "var(--text)", marginBottom: 5 }}>Who can view</div>
+        <div style={{ font: "400 12.5px/1.5 var(--font-ui)", color: "var(--text-muted)", marginBottom: 16 }}>
+          {site.workspaceName
+            ? `This site lives in the "${site.workspaceName}" workspace.`
+            : "Personal site — move-to-workspace is not supported yet; pick the audience below."}
+        </div>
+        <div className="seg-group">
+          {(
+            [
+              ["only_me", "Only me", Lock],
+              ["allowlist", "Specific people", Mail],
+              ["team", "Whole team", Users],
+            ] as const
+          ).map(([value, label, Icon]) => {
+            const disabled = value === "team" && !site.workspaceName;
+            return (
+              <button
+                key={value}
+                className={`seg${visibility === value ? " active" : ""}`}
+                disabled={disabled || busy !== null}
+                style={disabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                title={disabled ? "Team visibility requires a workspace site" : undefined}
+                onClick={() => {
+                  setVisibility(value);
+                  call(
+                    "visibility",
+                    () =>
+                      fetch(`/api/sites/${site.id}`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ visibility: value }),
+                      }),
+                    "Visibility updated.",
+                  );
+                }}
+              >
+                <Icon size={14} />
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* viewers */}
+      {visibility === "allowlist" && (
       <div className="card" style={{ padding: 24, marginBottom: 18 }}>
         <div style={{ font: "700 15px/1 var(--font-ui)", color: "var(--text)", marginBottom: 5 }}>Allowed viewers</div>
         <div style={{ font: "400 12.5px/1.5 var(--font-ui)", color: "var(--text-muted)", marginBottom: 16 }}>
@@ -371,6 +422,7 @@ export function ManagePanel({
           </button>
         </div>
       </div>
+      )}
 
       {/* pages */}
       {files.length > 0 && (

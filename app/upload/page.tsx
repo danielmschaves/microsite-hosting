@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { query } from "@/lib/db";
+import { getWorkspacesFor } from "@/lib/teams";
 import { FREE_SITE_LIMIT, FREE_STORAGE_BYTES } from "@/lib/plan";
 import { AppBar } from "@/components/AppBar";
 import { UploadForm } from "@/components/UploadForm";
@@ -17,6 +18,7 @@ export default async function UploadPage() {
     [email],
   );
   const usedBytes = rows.reduce((s, r) => s + Number(r.size_bytes), 0);
+  const workspaces = await getWorkspacesFor(email);
 
   return (
     <>
@@ -29,7 +31,9 @@ export default async function UploadPage() {
         siteLimit={FREE_SITE_LIMIT}
         storageLimitBytes={FREE_STORAGE_BYTES}
       />
-      <UploadForm />
+      <UploadForm
+        workspaces={workspaces.map((w) => ({ id: w.id, name: w.name }))}
+      />
     </>
   );
 }

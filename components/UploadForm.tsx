@@ -30,7 +30,16 @@ const TTL_LABEL: Record<string, string> = {
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const MAX_PAGES = 20;
 
-export function UploadForm() {
+export interface UploadWorkspace {
+  id: string;
+  name: string;
+}
+
+export function UploadForm({
+  workspaces = [],
+}: {
+  workspaces?: UploadWorkspace[];
+}) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -40,6 +49,8 @@ export function UploadForm() {
   const [dragging, setDragging] = useState(false);
   const [slug, setSlug] = useState("");
   const [ttl, setTtl] = useState<"24h" | "7d" | "30d">("7d");
+  const [dest, setDest] = useState(""); // "" = personal, else workspace id
+  const [visibility, setVisibility] = useState<"only_me" | "allowlist" | "team">("allowlist");
   const [chips, setChips] = useState<string[]>([]);
   const [chipInput, setChipInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -126,8 +137,14 @@ export function UploadForm() {
       body.set("ttl", ttl);
       if (files.length > 1 && indexName) body.set("index", indexName);
       if (slug.trim()) body.set("slug", slug.trim());
-      const viewers = [...chips];
-      if (chipInput.trim() && EMAIL_RE.test(chipInput.trim().toLowerCase())) {
+      if (dest) body.set("workspaceId", dest);
+      body.set("visibility", visibility);
+      const viewers = visibility === "allowlist" ? [...chips] : [];
+      if (
+        visibility === "allowlist" &&
+        chipInput.trim() &&
+        EMAIL_RE.test(chipInput.trim().toLowerCase())
+      ) {
         viewers.push(chipInput.trim().toLowerCase());
       }
       if (viewers.length) body.set("viewers", viewers.join(","));
@@ -155,11 +172,19 @@ export function UploadForm() {
     setChips([]);
     setChipInput("");
     setTtl("7d");
+    setDest("");
+    setVisibility("allowlist");
     if (inputRef.current) inputRef.current.value = "";
   }
 
   const viewerLabel =
-    chips.length === 0 ? "Only me" : chips.length === 1 ? "1 viewer" : `${chips.length} viewers`;
+    visibility === "team"
+      ? "Whole team"
+      : visibility === "only_me" || chips.length === 0
+        ? "Only me"
+        : chips.length === 1
+          ? "1 viewer"
+          : `${chips.length} viewers`;
   const totalKb = files.reduce((s, f) => s + f.size, 0) / 1024;
 
   return (
@@ -318,6 +343,52 @@ export function UploadForm() {
                 </div>
               </div>
 
+              {workspaces.length > 0 && (
+                <div style={{ marginBottom: 18 }}>
+                  <label className="lbl">Publish to</label>
+                  <select
+                    value={dest}
+                    onChange={(e) => {
+                      setDest(e.target.value);
+                      if (!e.target.value && visibility === "team") setVisibility("allowlist");
+                    }}
+                    className="field"
+                  >
+                    <option value="">Personal</option>
+                    {workspaces.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div style={{ marginBottom: 18 }}>
+                <label className="lbl">Who can view</label>
+                <div className="seg-group">
+                  <button className={`seg${visibility === "only_me" ? " active" : ""}`} onClick={() => setVisibility("only_me")}>
+                    <Lock size={14} />
+                    Only me
+                  </button>
+                  <button className={`seg${visibility === "allowlist" ? " active" : ""}`} onClick={() => setVisibility("allowlist")}>
+                    <Mail size={14} />
+                    Specific people
+                  </button>
+                  <button
+                    className={`seg${visibility === "team" ? " active" : ""}`}
+                    onClick={() => dest && setVisibility("team")}
+                    disabled={!dest}
+                    style={!dest ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                    title={!dest ? "Pick a workspace destination first" : undefined}
+                  >
+                    <Users size={14} />
+                    Whole team
+                  </button>
+                </div>
+              </div>
+
+              {visibility === "allowlist" && (
               <div>
                 <label className="lbl">Allowed viewers</label>
                 <div className="focus-ring" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: 10, borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border-strong)" }}>
@@ -348,6 +419,7 @@ export function UploadForm() {
                   You can edit this later from the site&apos;s manage panel. Enforced server-side.
                 </div>
               </div>
+              )}
             </div>
           </div>
 

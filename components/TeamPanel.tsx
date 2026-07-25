@@ -16,6 +16,12 @@ import {
   Check,
   LogOut,
   Pencil,
+  HardDrive,
+  Globe,
+  Lock,
+  TimerOff,
+  Trash2,
+  ScrollText,
 } from "lucide-react";
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -36,6 +42,21 @@ export interface TeamInvite {
   role: string;
   expiresAt: string;
 }
+export interface TeamSite {
+  id: string;
+  slug: string;
+  owner: string;
+  sizeBytes: number;
+  visibility: string;
+  expiresAt: string;
+}
+export interface AuditEntry {
+  type: string;
+  actor: string | null;
+  slug: string | null;
+  meta: Record<string, unknown>;
+  at: string;
+}
 
 export function TeamPanel({
   workspace,
@@ -43,12 +64,16 @@ export function TeamPanel({
   myEmail,
   members,
   invites,
+  sites = [],
+  audit = [],
 }: {
   workspace: { id: string; name: string; plan: string; maxTtl: string | null };
   myRole: string;
   myEmail: string;
   members: TeamMember[];
   invites: TeamInvite[];
+  sites?: TeamSite[];
+  audit?: AuditEntry[];
 }) {
   const router = useRouter();
   const isAdmin = myRole === "admin" || myRole === "owner";
@@ -239,6 +264,19 @@ export function TeamPanel({
         </div>
       )}
 
+      {/* usage */}
+      <div className="card" style={{ padding: 24, marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, font: "700 15px/1 var(--font-ui)", color: "var(--text)", marginBottom: 14 }}>
+          <HardDrive size={15} />
+          Usage
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14 }}>
+          <UsageStat label="Active sites" value={String(sites.length)} />
+          <UsageStat label="Storage" value={sizeLabel(sites.reduce((s, x) => s + x.sizeBytes, 0))} />
+          <UsageStat label="Members" value={String(members.length)} />
+        </div>
+      </div>
+
       {/* members */}
       <div className="card" style={{ padding: 24, marginBottom: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, font: "700 15px/1 var(--font-ui)", color: "var(--text)", marginBottom: 14 }}>
@@ -340,6 +378,98 @@ export function TeamPanel({
         </div>
       )}
 
+      {/* workspace sites */}
+      {sites.length > 0 && (
+        <div className="card" style={{ padding: 24, marginBottom: 18 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, font: "700 15px/1 var(--font-ui)", color: "var(--text)", marginBottom: 14 }}>
+            <Globe size={15} />
+            Sites in this workspace
+          </div>
+          {sites.map((s, i) => {
+            const expired = new Date(s.expiresAt).getTime() <= Date.now();
+            return (
+              <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
+                <a href={`/s/${s.slug}`} target="_blank" rel="noreferrer" className="mb-mono" style={{ font: "600 13px/1.2 var(--font-mono)", color: expired ? "var(--text-subtle)" : "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
+                  {s.slug}
+                </a>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 999, background: "var(--surface-2)", border: "1px solid var(--border)", color: "var(--text-muted)", font: "600 10px/1 var(--font-ui)", whiteSpace: "nowrap" }}>
+                  {s.visibility === "team" ? <Users size={10} /> : s.visibility === "only_me" ? <Lock size={10} /> : <Mail size={10} />}
+                  {s.visibility === "team" ? "Team" : s.visibility === "only_me" ? "Only owner" : "Allowlist"}
+                </span>
+                <span className="mb-mono" style={{ font: "500 11px/1 var(--font-mono)", color: "var(--text-subtle)", whiteSpace: "nowrap" }}>
+                  {s.owner === myEmail ? "you" : s.owner.split("@")[0]} · {sizeLabel(s.sizeBytes)}
+                </span>
+                {expired ? (
+                  <span style={{ font: "600 10.5px/1 var(--font-ui)", color: "var(--danger)", whiteSpace: "nowrap" }}>expired</span>
+                ) : (
+                  isAdmin && (
+                    <>
+                      <button
+                        onClick={() =>
+                          confirm(`Force-expire "${s.slug}"? It stops being served immediately.`) &&
+                          call(`fexp-${s.id}`, () =>
+                            fetch(`/api/sites/${s.id}`, {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ action: "force_expire" }),
+                            }),
+                          "Site force-expired.")
+                        }
+                        disabled={busy !== null}
+                        aria-label="Force expire"
+                        title="Force expire"
+                        className="icon-btn"
+                        style={{ width: 28, height: 28 }}
+                      >
+                        <TimerOff size={13} />
+                      </button>
+                      <button
+                        onClick={() =>
+                          confirm(`Move "${s.slug}" to trash?`) &&
+                          call(`trash-${s.id}`, () =>
+                            fetch(`/api/sites/${s.id}`, { method: "DELETE" }),
+                          "Site moved to trash.")
+                        }
+                        disabled={busy !== null}
+                        aria-label="Trash"
+                        title="Move to trash"
+                        className="icon-btn danger"
+                        style={{ width: 28, height: 28 }}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </>
+                  )
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* audit log (admin+) */}
+      {isAdmin && audit.length > 0 && (
+        <div className="card" style={{ padding: 24, marginBottom: 18 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, font: "700 15px/1 var(--font-ui)", color: "var(--text)", marginBottom: 5 }}>
+            <ScrollText size={15} />
+            Audit log
+          </div>
+          <div style={{ font: "400 12.5px/1.5 var(--font-ui)", color: "var(--text-muted)", marginBottom: 14 }}>
+            Last 30 days of workspace activity.
+          </div>
+          {audit.map((a, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "8px 0", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
+              <span className="mb-mono" style={{ font: "500 10.5px/1.3 var(--font-mono)", color: "var(--text-subtle)", flex: "none", width: 74 }}>
+                {agoShort(a.at)}
+              </span>
+              <span style={{ font: "400 12.5px/1.5 var(--font-ui)", color: "var(--text-muted)", minWidth: 0 }}>
+                {auditLabel(a)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* settings (admin+) */}
       {isAdmin && (
         <div className="card" style={{ padding: 24, marginBottom: 18 }}>
@@ -373,7 +503,7 @@ export function TeamPanel({
       )}
 
       {/* leave */}
-      {!isOwner && (
+      {!isOwner ? (
         <div className="card" style={{ padding: 24 }}>
           <div style={{ font: "700 15px/1 var(--font-ui)", color: "var(--text)", marginBottom: 5 }}>Leave workspace</div>
           <div style={{ font: "400 12.5px/1.5 var(--font-ui)", color: "var(--text-muted)", marginBottom: 16 }}>
@@ -384,7 +514,56 @@ export function TeamPanel({
             {busy === "leave" ? "Leaving…" : "Leave workspace"}
           </button>
         </div>
-      )}
+      ) : null}
     </div>
   );
+}
+
+function UsageStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border)" }}>
+      <div style={{ font: "600 11px/1 var(--font-ui)", color: "var(--text-subtle)", marginBottom: 8 }}>{label}</div>
+      <div style={{ font: "800 19px/1 var(--font-ui)", color: "var(--text)" }}>{value}</div>
+    </div>
+  );
+}
+
+function sizeLabel(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function agoShort(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(ms / 60_000);
+  if (m < 1) return "now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+function auditLabel(a: AuditEntry): string {
+  const who = a.actor ? a.actor.split("@")[0] : "system";
+  const site = a.slug ? `"${a.slug}"` : "a site";
+  const meta = a.meta as Record<string, string | number | boolean | undefined>;
+  switch (a.type) {
+    case "workspace_created": return `${who} created the workspace`;
+    case "workspace_renamed": return `${who} renamed the workspace to "${meta.name}"`;
+    case "member_invited": return `${who} invited ${meta.invitee} as ${meta.role}`;
+    case "member_joined": return `${who} joined as ${meta.role}`;
+    case "member_removed": return meta.self ? `${meta.member} left the workspace` : `${who} removed ${meta.member}`;
+    case "member_role_changed": return `${who} made ${meta.member} ${meta.role}`;
+    case "ttl_policy_changed": return `${who} set max TTL to ${meta.maxTtl ?? "plan max"}`;
+    case "site_created": return `${who} published ${site}`;
+    case "visibility_changed": return `${who} changed ${site} visibility to ${meta.to}`;
+    case "site_force_expired": return `${who} force-expired ${site}`;
+    case "site_trashed": return meta.by === "cron" ? `${site} expired and moved to trash` : `${who} moved ${site} to trash`;
+    case "site_restored": return `${who} restored ${site}`;
+    case "site_purged": return `${site} permanently deleted`;
+    case "ttl_extended": return `${who} extended ${site} TTL to ${meta.ttl}`;
+    case "slug_renamed": return `${who} renamed "${meta.from}" to "${meta.to}"`;
+    case "subscription_updated": return `subscription updated (${meta.status ?? ""})`;
+    default: return `${who}: ${a.type}`;
+  }
 }

@@ -45,6 +45,17 @@ export interface TrashView {
   purgeAt: string;
 }
 
+export interface TeamSiteView {
+  id: string;
+  slug: string;
+  url: string;
+  owner: string;
+  sizeBytes: number;
+  pageCount: number;
+  expiresAt: string;
+  workspaceName: string;
+}
+
 type State = "fresh" | "expiring" | "expired";
 
 const TTL_LABEL: Record<string, string> = {
@@ -86,9 +97,11 @@ const CD_CONF: Record<State, { color: string; Icon: typeof Clock }> = {
 export function SitesView({
   sites,
   trash,
+  teamSites = [],
 }: {
   sites: SiteView[];
   trash: TrashView[];
+  teamSites?: TeamSiteView[];
 }) {
   const router = useRouter();
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -123,9 +136,9 @@ export function SitesView({
     return sites.filter((s) => s.slug.toLowerCase().includes(needle));
   }, [sites, q]);
 
-  async function copy(site: SiteView) {
+  async function copyUrl(url: string) {
     try {
-      await navigator.clipboard.writeText(site.url);
+      await navigator.clipboard.writeText(url);
       setToast("Link copied to clipboard");
       setTimeout(() => setToast(null), 2000);
     } catch {
@@ -133,6 +146,8 @@ export function SitesView({
       setTimeout(() => setToast(null), 2500);
     }
   }
+
+  const copy = (site: SiteView) => copyUrl(site.url);
 
   const deleteSite = sites.find((s) => s.id === deleteId) || null;
   const extendSite = sites.find((s) => s.id === extendId) || null;
@@ -230,6 +245,10 @@ export function SitesView({
             </div>
           )}
         </>
+      )}
+
+      {teamSites.length > 0 && (
+        <TeamSitesSection teamSites={teamSites} nowMs={nowMs} onCopy={(u) => copyUrl(u)} />
       )}
 
       {trash.length > 0 && (
@@ -610,6 +629,89 @@ function EmptyState() {
         <UploadCloud size={16} />
         Upload your first site
       </Link>
+    </div>
+  );
+}
+
+function TeamSitesSection({
+  teamSites,
+  nowMs,
+  onCopy,
+}: {
+  teamSites: TeamSiteView[];
+  nowMs: number;
+  onCopy: (url: string) => void;
+}) {
+  return (
+    <div style={{ marginTop: 34 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <Users size={15} style={{ color: "var(--text-subtle)" }} />
+        <h2 style={{ margin: 0, font: "700 15px/1 var(--font-ui)", color: "var(--text-muted)" }}>
+          Shared with your teams ({teamSites.length})
+        </h2>
+      </div>
+      <div className="card" style={{ overflow: "hidden" }}>
+        {teamSites.map((t, i) => {
+          const expiresMs = new Date(t.expiresAt).getTime();
+          const st = computeState(expiresMs, nowMs);
+          const { color, Icon } = CD_CONF[st];
+          return (
+            <div
+              key={t.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+                padding: "12px 16px",
+                borderTop: i === 0 ? "none" : "1px solid var(--border)",
+              }}
+            >
+              <div
+                style={{
+                  width: 52,
+                  height: 38,
+                  borderRadius: 8,
+                  flex: "none",
+                  backgroundImage:
+                    "repeating-linear-gradient(135deg, var(--surface-3) 0 6px, var(--surface-2) 6px 12px)",
+                  border: "1px solid var(--border)",
+                }}
+              />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <a href={t.url} target="_blank" rel="noreferrer" style={{ font: "700 13.5px/1.1 var(--font-ui)", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>
+                  {t.slug}
+                </a>
+                <div className="mb-mono" style={{ font: "500 11px/1 var(--font-mono)", color: "var(--text-subtle)", marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {t.workspaceName} · by {t.owner}
+                  {t.pageCount > 1 ? ` · ${t.pageCount} pages` : ""}
+                </div>
+              </div>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "5px 10px",
+                  borderRadius: 999,
+                  background: `color-mix(in srgb, ${color} 15%, var(--bg))`,
+                  border: `1px solid color-mix(in srgb, ${color} 40%, transparent)`,
+                  font: "600 11px/1 var(--font-ui)",
+                  whiteSpace: "nowrap",
+                  flex: "none",
+                }}
+              >
+                <Icon size={12} style={{ color }} />
+                <span className="mb-mono" style={{ color }}>
+                  {countdownLabel(expiresMs, nowMs)}
+                </span>
+              </span>
+              <button onClick={() => onCopy(t.url)} className="icon-btn" aria-label="Copy link" style={{ width: 32, height: 32, background: "transparent" }}>
+                <Copy size={14} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
