@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requestBase } from "@/lib/url";
 import { requireWorkspaceRole } from "@/lib/teams";
 import { billingEnabled } from "@/lib/plan";
 import { createPortalSession } from "@/lib/billing";
@@ -21,7 +22,7 @@ export async function POST(
     );
   }
 
-  const base = process.env.NEXT_PUBLIC_BASE_URL || new URL(req.url).origin;
+  const base = requestBase(req);
   const url = await createPortalSession(res.workspace, `${base}/teams/${id}`);
   return NextResponse.json({ url });
 }

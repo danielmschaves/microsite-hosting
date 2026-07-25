@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requestBase } from "@/lib/url";
 import { auth } from "@/auth";
 import { query } from "@/lib/db";
 import { listPrefix, deletePrefix, s3, BUCKET } from "@/lib/storage";
@@ -136,7 +137,7 @@ export async function POST(req: Request) {
     uploadId,
   ]);
 
-  const base = process.env.NEXT_PUBLIC_BASE_URL || new URL(req.url).origin;
+  const base = requestBase(req);
   return NextResponse.json({
     slug: site.slug,
     url: `${base}/s/${site.slug}`,

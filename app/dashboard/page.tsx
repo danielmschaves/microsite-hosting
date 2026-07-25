@@ -94,14 +94,15 @@ export default async function Dashboard() {
 
   const stats = await statsForSites(rows.map((r) => r.id));
 
-  const base = process.env.NEXT_PUBLIC_BASE_URL || "";
+  // Relative URLs: correct on any host; clients prepend window.location.origin
+  // only where an absolute URL is needed (clipboard copy).
   const sites: SiteView[] = rows.map((r) => {
     const viewers = Number(r.viewer_count);
     const s = stats.get(r.id);
     return {
       id: r.id,
       slug: r.slug,
-      url: `${base}/s/${r.slug}`,
+      url: `/s/${r.slug}`,
       sizeBytes: Number(r.size_bytes),
       pageCount: Number(r.page_count),
       ttlPreset: r.ttl_preset,
@@ -127,7 +128,7 @@ export default async function Dashboard() {
   const teamSites: TeamSiteView[] = teamRows.map((r) => ({
     id: r.id,
     slug: r.slug,
-    url: `${base}/s/${r.slug}`,
+    url: `/s/${r.slug}`,
     owner: r.owner_email,
     sizeBytes: Number(r.size_bytes),
     pageCount: Number(r.page_count),

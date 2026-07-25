@@ -57,7 +57,6 @@ export default async function ManageSitePage({
   );
   const usedBytes = all.reduce((s, r) => s + Number(r.size_bytes), 0);
 
-  const base = process.env.NEXT_PUBLIC_BASE_URL || "";
   const indexName = site.index_key.slice(site.s3_prefix.length);
 
   const workspace: WorkspaceRow | null = site.workspace_id
@@ -87,7 +86,7 @@ export default async function ManageSitePage({
         site={{
           id: site.id,
           slug: site.slug,
-          url: `${base}/s/${site.slug}`,
+          url: `/s/${site.slug}`,
           sizeBytes: Number(site.size_bytes),
           pageCount: Number(site.page_count),
           ttlPreset: site.ttl_preset,

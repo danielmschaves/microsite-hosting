@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
+import { requestBase } from "@/lib/url";
 import { query } from "@/lib/db";
 import { requireWorkspaceRole, isRole, getMembership } from "@/lib/teams";
 import { sendEmail, inviteEmail } from "@/lib/email";
@@ -84,7 +85,7 @@ export async function POST(
     [id, invitee, role, token, actor, expiresAt],
   );
 
-  const base = process.env.NEXT_PUBLIC_BASE_URL || new URL(req.url).origin;
+  const base = requestBase(req);
   const inviteUrl = `${base}/invite/${token}`;
   const { sent } = await sendEmail({
     to: invitee,

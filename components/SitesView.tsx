@@ -164,7 +164,8 @@ export function SitesView({
 
   async function copyUrl(url: string) {
     try {
-      await navigator.clipboard.writeText(url);
+      const absolute = url.startsWith("/") ? `${window.location.origin}${url}` : url;
+      await navigator.clipboard.writeText(absolute);
       setToast({
         title: "Link copied",
         detail: "Private URL copied to clipboard.",
@@ -389,7 +390,7 @@ function Countdown({ site, nowMs, corner }: { site: SiteView; nowMs: number; cor
     flex: "none",
     ...(st === "expiring" ? { animation: "mb-pulse 2s ease-in-out infinite" } : {}),
     ...(corner
-      ? { position: "absolute", top: 12, right: 12, backdropFilter: "blur(6px)" }
+      ? { position: "absolute", top: 12, right: 12, zIndex: 2, backdropFilter: "blur(6px)" }
       : {}),
   };
   return (
@@ -474,15 +475,46 @@ function SiteCard({
   const expired = new Date(site.expiresAt).getTime() <= nowMs;
   return (
     <div className="card" style={{ overflow: "hidden", boxShadow: "var(--shadow-1)" }}>
-      <div style={thumbStyle(expired)}>
-        <span style={{ font: "600 11px/1 var(--font-mono)", letterSpacing: ".1em", color: "var(--text-subtle)" }}>
+      <a
+        href={site.url}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`Open ${site.slug}`}
+        style={{ ...thumbStyle(expired), display: "block", overflow: "hidden" }}
+      >
+        <span style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", font: "600 11px/1 var(--font-mono)", letterSpacing: ".1em", color: "var(--text-subtle)" }}>
           HTML
         </span>
+        {!expired && (
+          // Live preview: the real site, scaled down. Sandboxed without
+          // same-origin so uploaded scripts can't reach the dashboard;
+          // ?preview=1 keeps owner previews out of view analytics.
+          <iframe
+            src={`${site.url}?preview=1`}
+            title={`Preview of ${site.slug}`}
+            sandbox="allow-scripts"
+            loading="lazy"
+            tabIndex={-1}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "400%",
+              height: "400%",
+              transform: "scale(0.25)",
+              transformOrigin: "top left",
+              border: 0,
+              pointerEvents: "none",
+              background: "#fff",
+            }}
+          />
+        )}
         <span
           style={{
             position: "absolute",
             top: 12,
             left: 12,
+            zIndex: 2,
             display: "inline-flex",
             alignItems: "center",
             gap: 6,
@@ -500,10 +532,13 @@ function SiteCard({
           Private
         </span>
         <Countdown site={site} nowMs={nowMs} corner />
-      </div>
+      </a>
       <div style={{ padding: "15px 16px 14px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 9 }}>
-          <div
+          <a
+            href={site.url}
+            target="_blank"
+            rel="noreferrer"
             style={{
               font: "700 14.5px/1.1 var(--font-ui)",
               color: "var(--text)",
@@ -513,7 +548,7 @@ function SiteCard({
             }}
           >
             {site.slug}
-          </div>
+          </a>
           <span style={{ font: "500 11px/1 var(--font-mono)", color: "var(--text-subtle)", flex: "none" }}>
             {sizeLabel(site.sizeBytes)}
           </span>
@@ -595,12 +630,17 @@ function SiteRow({
         borderTop: first ? "none" : "1px solid var(--border)",
       }}
     >
-      <div
+      <a
+        href={site.url}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`Open ${site.slug}`}
         style={{
           width: 52,
           height: 38,
           borderRadius: 8,
           flex: "none",
+          display: "block",
           backgroundImage:
             "repeating-linear-gradient(135deg, var(--surface-3) 0 6px, var(--surface-2) 6px 12px)",
           border: "1px solid var(--border)",
@@ -608,9 +648,9 @@ function SiteRow({
         }}
       />
       <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ font: "700 13.5px/1.1 var(--font-ui)", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <a href={site.url} target="_blank" rel="noreferrer" style={{ display: "block", font: "700 13.5px/1.1 var(--font-ui)", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {site.slug}
-        </div>
+        </a>
         <a
           href={site.url}
           target="_blank"
