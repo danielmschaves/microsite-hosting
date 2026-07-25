@@ -2,9 +2,15 @@ import { redirect } from "next/navigation";
 import { Mail, Lock, Check } from "lucide-react";
 import { auth, enabledProviders } from "@/auth";
 import { query } from "@/lib/db";
-import { FREE_SITE_LIMIT, FREE_STORAGE_BYTES } from "@/lib/plan";
+import {
+  FREE_SITE_LIMIT,
+  FREE_STORAGE_BYTES,
+  FREE_PLAN,
+  allowedTtlPresets,
+} from "@/lib/plan";
 import { AppBar } from "@/components/AppBar";
 import { SignOutButton } from "@/components/AuthButtons";
+import { NewSiteDefaults } from "@/components/NewSiteDefaults";
 
 export const dynamic = "force-dynamic";
 
@@ -74,7 +80,7 @@ export default async function SettingsPage() {
           Settings
         </h1>
         <p style={{ margin: "0 0 28px", font: "400 13.5px/1 var(--font-ui)", color: "var(--text-muted)" }}>
-          Your account and sign-in providers.
+          Account, new-site defaults and sign-in providers.
         </p>
 
         {/* profile */}
@@ -125,6 +131,9 @@ export default async function SettingsPage() {
             {enabledProviders.github ? connected : notConfigured}
           </div>
         </div>
+
+        {/* new-site defaults */}
+        <NewSiteDefaults personalTtls={allowedTtlPresets(FREE_PLAN)} />
 
         {/* session */}
         <div className="card" style={{ padding: 24 }}>

@@ -78,6 +78,20 @@ export function UploadForm({
 
   useEffect(() => {
     setHost(`${window.location.host}/s/`);
+    // Pre-fill from "Defaults for new sites" (settings page, localStorage).
+    try {
+      const t = localStorage.getItem("mb-default-ttl");
+      if (t && personalTtls.includes(t)) setTtl(t);
+      const v = localStorage.getItem("mb-default-visibility");
+      if (v === "only_me" || v === "allowlist") setVisibility(v);
+      const c = JSON.parse(localStorage.getItem("mb-default-viewers") || "[]");
+      if (Array.isArray(c) && c.length) {
+        setChips(c.filter((x) => typeof x === "string" && EMAIL_RE.test(x)));
+      }
+    } catch {
+      /* ignore */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function addFiles(incoming: FileList | File[] | null) {

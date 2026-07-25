@@ -24,6 +24,7 @@ interface DashboardRow {
   expires_at: Date;
   viewer_count: string;
   workspace_id: string | null;
+  visibility: string;
 }
 
 interface TrashRow {
@@ -39,7 +40,7 @@ export default async function Dashboard() {
   if (!email) redirect("/");
 
   const rows = await query<DashboardRow>(
-    `SELECT s.id, s.slug, s.size_bytes, s.page_count, s.ttl_preset, s.expires_at, s.workspace_id,
+    `SELECT s.id, s.slug, s.size_bytes, s.page_count, s.ttl_preset, s.expires_at, s.workspace_id, s.visibility,
             (SELECT count(*) FROM site_viewers v WHERE v.site_id = s.id) AS viewer_count
        FROM sites s
       WHERE s.owner_email = $1 AND s.deleted_at IS NULL
@@ -110,6 +111,7 @@ export default async function Dashboard() {
       views: s?.views ?? 0,
       lastViewedAt: s?.lastViewedAt ?? null,
       allowedTtls: ttlsFor(r.workspace_id),
+      visibility: r.visibility,
     };
   });
 

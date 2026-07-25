@@ -24,6 +24,7 @@ import {
   Settings2,
   ArchiveRestore,
   AlertTriangle,
+  SlidersHorizontal,
 } from "lucide-react";
 
 export interface SiteView {
@@ -38,6 +39,7 @@ export interface SiteView {
   views: number;
   lastViewedAt: string | null;
   allowedTtls: string[];
+  visibility: string;
 }
 
 export interface TrashView {
@@ -111,6 +113,7 @@ export function SitesView({
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [view, setView] = useState<"grid" | "list">("grid");
   const [q, setQ] = useState("");
+  const [visFilter, setVisFilter] = useState<"all" | "only_me" | "allowlist" | "team">("all");
   const [toast, setToast] = useState<{
     title: string;
     detail: string;
@@ -140,9 +143,24 @@ export function SitesView({
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    if (!needle) return sites;
-    return sites.filter((s) => s.slug.toLowerCase().includes(needle));
-  }, [sites, q]);
+    return sites.filter(
+      (s) =>
+        (visFilter === "all" || s.visibility === visFilter) &&
+        (!needle || s.slug.toLowerCase().includes(needle)),
+    );
+  }, [sites, q, visFilter]);
+
+  const FILTER_ORDER = ["all", "only_me", "allowlist", "team"] as const;
+  const FILTER_LABEL: Record<(typeof FILTER_ORDER)[number], string> = {
+    all: "All",
+    only_me: "Only me",
+    allowlist: "Allowlist",
+    team: "Team",
+  };
+  const cycleFilter = () =>
+    setVisFilter(
+      (f) => FILTER_ORDER[(FILTER_ORDER.indexOf(f) + 1) % FILTER_ORDER.length],
+    );
 
   async function copyUrl(url: string) {
     try {
@@ -218,19 +236,43 @@ export function SitesView({
                 style={{ paddingLeft: 34 }}
               />
             </div>
-            <div style={{ display: "flex", gap: 3, padding: 3, borderRadius: 9, background: "var(--surface-2)", border: "1px solid var(--border)" }}>
-              <ViewBtn active={view === "grid"} onClick={() => setViewPersist("grid")} label="grid">
-                <LayoutGrid size={15} />
-              </ViewBtn>
-              <ViewBtn active={view === "list"} onClick={() => setViewPersist("list")} label="list">
-                <List size={15} />
-              </ViewBtn>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <button
+                onClick={cycleFilter}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 7,
+                  padding: "8px 12px",
+                  borderRadius: "var(--r-md)",
+                  font: "600 12.5px/1 var(--font-ui)",
+                  color: visFilter === "all" ? "var(--text-muted)" : "var(--text)",
+                  background: visFilter === "all" ? "var(--surface-2)" : "var(--accent-soft)",
+                  border: `1px solid ${visFilter === "all" ? "var(--border)" : "var(--accent-border)"}`,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+                title="Filter by visibility"
+              >
+                <SlidersHorizontal size={14} />
+                {FILTER_LABEL[visFilter]}
+              </button>
+              <div style={{ display: "flex", gap: 3, padding: 3, borderRadius: 9, background: "var(--surface-2)", border: "1px solid var(--border)" }}>
+                <ViewBtn active={view === "grid"} onClick={() => setViewPersist("grid")} label="grid">
+                  <LayoutGrid size={15} />
+                </ViewBtn>
+                <ViewBtn active={view === "list"} onClick={() => setViewPersist("list")} label="list">
+                  <List size={15} />
+                </ViewBtn>
+              </div>
             </div>
           </div>
 
           {filtered.length === 0 ? (
             <p style={{ font: "400 13.5px/1 var(--font-ui)", color: "var(--text-muted)" }}>
-              No sites match “{q}”.
+              {q.trim()
+                ? `No sites match “${q}”.`
+                : `No ${FILTER_LABEL[visFilter].toLowerCase()} sites.`}
             </p>
           ) : view === "grid" ? (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(320px,1fr))", gap: 18 }}>
@@ -645,6 +687,35 @@ function EmptyState() {
         <UploadCloud size={16} />
         Upload your first site
       </Link>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginTop: 44, width: "100%", maxWidth: 640 }}>
+        <EmptyStep n="01" icon={<FileCode2 size={16} style={{ color: "var(--accent)" }} />} title="Drop an .html file" sub="Self-contained page, up to 25 MB." />
+        <EmptyStep n="02" icon={<Users size={16} style={{ color: "var(--accent)" }} />} title="Set TTL & allowlist" sub="Choose who sees it and how long." />
+        <EmptyStep n="03" icon={<Link2 size={16} style={{ color: "var(--accent)" }} />} title="Share the private link" sub="Viewers sign in to open it." />
+      </div>
+    </div>
+  );
+}
+
+function EmptyStep({
+  n,
+  icon,
+  title,
+  sub,
+}: {
+  n: string;
+  icon: React.ReactNode;
+  title: string;
+  sub: string;
+}) {
+  return (
+    <div style={{ textAlign: "left", padding: 16, borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        {icon}
+        <span className="mb-mono" style={{ font: "600 10px/1 var(--font-mono)", color: "var(--text-subtle)" }}>{n}</span>
+      </div>
+      <div style={{ font: "600 13px/1.3 var(--font-ui)", color: "var(--text)" }}>{title}</div>
+      <div style={{ font: "400 11.5px/1.4 var(--font-ui)", color: "var(--text-muted)", marginTop: 4 }}>{sub}</div>
     </div>
   );
 }
