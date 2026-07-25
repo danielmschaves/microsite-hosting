@@ -100,6 +100,27 @@ Then **Deployments → ⋯ → Redeploy**. A redeploy is required:
   account → 403
 - Function logs show `[startup] database schema ready` / `storage bucket ready`
 
+## Optional services (v1.0 features)
+
+All optional — absent env vars degrade gracefully (no email → invite copy-links;
+no Stripe → everything is free tier).
+
+**Resend (team invite emails):** create an API key at https://resend.com, verify
+a sender domain, set `RESEND_API_KEY` + `EMAIL_FROM` (e.g.
+`MicroBuild <invites@yourdomain.com>`).
+
+**Stripe (Team plan billing):**
+1. Create a product "MicroBuild Team" with a recurring per-seat price
+   (~$5/user/month) → copy the price id → `STRIPE_TEAM_PRICE_ID`.
+2. `STRIPE_SECRET_KEY` from API keys.
+3. Add a webhook endpoint `https://YOUR-DOMAIN/api/stripe/webhook` listening to:
+   `checkout.session.completed`, `customer.subscription.created`,
+   `customer.subscription.updated`, `customer.subscription.deleted`,
+   `invoice.payment_failed` → copy the signing secret → `STRIPE_WEBHOOK_SECRET`.
+4. Local testing: `stripe listen --forward-to localhost:3000/api/stripe/webhook`
+   (use the CLI's printed webhook secret), or skip Stripe entirely with
+   `PLAN_FAKE_TEAM=true` (dev-only; hard-blocked in production).
+
 ## Platform limits worth knowing
 
 - **Upload size:** Vercel serverless functions cap request bodies at ~4.5 MB.

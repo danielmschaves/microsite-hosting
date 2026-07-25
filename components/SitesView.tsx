@@ -36,6 +36,7 @@ export interface SiteView {
   viewersLabel: string;
   views: number;
   lastViewedAt: string | null;
+  allowedTtls: string[];
 }
 
 export interface TrashView {
@@ -62,7 +63,9 @@ const TTL_LABEL: Record<string, string> = {
   "24h": "24 hours",
   "7d": "7 days",
   "30d": "30 days",
+  "90d": "90 days",
 };
+const ALL_TTLS = ["24h", "7d", "30d", "90d"] as const;
 
 function sizeLabel(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -962,7 +965,11 @@ function ExtendModal({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [ttl, setTtl] = useState(site.ttlPreset in TTL_LABEL ? site.ttlPreset : "7d");
+  const [ttl, setTtl] = useState(
+    site.allowedTtls.includes(site.ttlPreset)
+      ? site.ttlPreset
+      : site.allowedTtls[site.allowedTtls.length - 1] || "7d",
+  );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -999,12 +1006,22 @@ function ExtendModal({
       </div>
       <label className="lbl">New lifetime</label>
       <div className="seg-group" style={{ marginBottom: 18 }}>
-        {(["24h", "7d", "30d"] as const).map((k) => (
-          <button key={k} className={`seg${ttl === k ? " active" : ""}`} onClick={() => setTtl(k)}>
-            <Clock size={14} />
-            {TTL_LABEL[k]}
-          </button>
-        ))}
+        {ALL_TTLS.map((k) => {
+          const locked = !site.allowedTtls.includes(k);
+          return (
+            <button
+              key={k}
+              className={`seg${ttl === k ? " active" : ""}`}
+              disabled={locked}
+              style={locked ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+              title={locked ? "Longer TTLs require the Team plan" : undefined}
+              onClick={() => setTtl(k)}
+            >
+              <Clock size={14} />
+              {TTL_LABEL[k]}
+            </button>
+          );
+        })}
       </div>
       {err && <div style={{ marginBottom: 14, color: "var(--danger)", font: "500 12.5px/1.4 var(--font-ui)" }}>{err}</div>}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>

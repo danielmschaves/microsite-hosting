@@ -2,7 +2,14 @@ import { notFound, redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { query, type WorkspaceRow } from "@/lib/db";
 import { getMembership } from "@/lib/teams";
-import { FREE_SITE_LIMIT, FREE_STORAGE_BYTES } from "@/lib/plan";
+import {
+  FREE_SITE_LIMIT,
+  FREE_STORAGE_BYTES,
+  MIN_TEAM_SEATS,
+  billingEnabled,
+  fakeTeam,
+  planForWorkspace,
+} from "@/lib/plan";
 import { AppBar } from "@/components/AppBar";
 import { TeamPanel } from "@/components/TeamPanel";
 
@@ -67,9 +74,10 @@ export default async function TeamPage({
     [id],
   );
 
-  // Audit entries (admins only) straight from events.
+  // Audit entries (team plan, admins only) straight from events.
+  const wsPlan = planForWorkspace(workspace);
   const audit =
-    myRole === "member"
+    myRole === "member" || wsPlan.auditDays === 0
       ? []
       : await query<{
           type: string;
@@ -134,6 +142,17 @@ export default async function TeamPage({
           meta: a.meta,
           at: new Date(a.created_at).toISOString(),
         }))}
+        billing={{
+          workspaceId: workspace.id,
+          plan: workspace.plan,
+          status: workspace.subscription_status,
+          seats: workspace.seats,
+          memberCount: members.length,
+          isOwner: myRole === "owner",
+          billingEnabled,
+          fakeTeam,
+          minSeats: MIN_TEAM_SEATS,
+        }}
       />
     </>
   );

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { query } from "@/lib/db";
 import { requireWorkspaceRole, isRole } from "@/lib/teams";
+import { updateSeatQuantity } from "@/lib/billing";
 import { track } from "@/lib/events";
 
 export const runtime = "nodejs";
@@ -114,6 +115,12 @@ export async function DELETE(
     meta: { member: target, self: isSelf },
   });
 
-  // Seat sync (Phase 3): updateSeatQuantity is wired here once billing lands.
+  // Seat sync: never blocks the membership change; webhook reconciles later.
+  const count = await query<{ count: string }>(
+    "SELECT count(*) FROM workspace_members WHERE workspace_id = $1",
+    [id],
+  );
+  await updateSeatQuantity(res.workspace, Number(count[0].count));
+
   return NextResponse.json({ ok: true });
 }

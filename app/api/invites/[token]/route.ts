@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { query } from "@/lib/db";
+import { query, type WorkspaceRow } from "@/lib/db";
 import { getMembership } from "@/lib/teams";
+import { updateSeatQuantity } from "@/lib/billing";
 import { track } from "@/lib/events";
 
 export const runtime = "nodejs";
@@ -69,6 +70,17 @@ export async function POST(
     meta: { role: invite.role },
   });
 
-  // Seat sync (Phase 3): updateSeatQuantity is wired here once billing lands.
+  // Seat sync: never blocks the join; webhook reconciles later.
+  const ws = await query<WorkspaceRow>("SELECT * FROM workspaces WHERE id = $1", [
+    invite.workspace_id,
+  ]);
+  if (ws[0]) {
+    const count = await query<{ count: string }>(
+      "SELECT count(*) FROM workspace_members WHERE workspace_id = $1",
+      [invite.workspace_id],
+    );
+    await updateSeatQuantity(ws[0], Number(count[0].count));
+  }
+
   return NextResponse.json({ ok: true, workspaceId: invite.workspace_id });
 }

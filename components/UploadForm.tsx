@@ -26,19 +26,25 @@ const TTL_LABEL: Record<string, string> = {
   "24h": "24 hours",
   "7d": "7 days",
   "30d": "30 days",
+  "90d": "90 days",
 };
+const ALL_TTLS = ["24h", "7d", "30d", "90d"] as const;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const MAX_PAGES = 20;
 
 export interface UploadWorkspace {
   id: string;
   name: string;
+  plan: string;
+  allowedTtls: string[];
 }
 
 export function UploadForm({
   workspaces = [],
+  personalTtls = ["24h", "7d", "30d"],
 }: {
   workspaces?: UploadWorkspace[];
+  personalTtls?: string[];
 }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -48,9 +54,13 @@ export function UploadForm({
   const [indexName, setIndexName] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [slug, setSlug] = useState("");
-  const [ttl, setTtl] = useState<"24h" | "7d" | "30d">("7d");
+  const [ttl, setTtl] = useState<string>("7d");
   const [dest, setDest] = useState(""); // "" = personal, else workspace id
   const [visibility, setVisibility] = useState<"only_me" | "allowlist" | "team">("allowlist");
+
+  const destWorkspace = workspaces.find((w) => w.id === dest) || null;
+  const allowedTtls = destWorkspace ? destWorkspace.allowedTtls : personalTtls;
+  const teamLocked = Boolean(destWorkspace && destWorkspace.plan !== "team");
   const [chips, setChips] = useState<string[]>([]);
   const [chipInput, setChipInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -334,13 +344,29 @@ export function UploadForm({
               <div style={{ marginBottom: 18 }}>
                 <label className="lbl">Expires after</label>
                 <div className="seg-group">
-                  {(["24h", "7d", "30d"] as const).map((k) => (
-                    <button key={k} className={`seg${ttl === k ? " active" : ""}`} onClick={() => setTtl(k)}>
-                      <Clock size={14} />
-                      {TTL_LABEL[k]}
-                    </button>
-                  ))}
+                  {ALL_TTLS.map((k) => {
+                    const locked = !allowedTtls.includes(k);
+                    return (
+                      <button
+                        key={k}
+                        className={`seg${ttl === k ? " active" : ""}`}
+                        disabled={locked}
+                        style={locked ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                        title={locked ? "Longer TTLs require the Team plan" : undefined}
+                        onClick={() => setTtl(k)}
+                      >
+                        <Clock size={14} />
+                        {TTL_LABEL[k]}
+                      </button>
+                    );
+                  })}
                 </div>
+                {!allowedTtls.includes(ttl) && (
+                  <div className="hint" style={{ color: "var(--warning)" }}>
+                    <Clock size={12} />
+                    Pick an available preset — current selection isn&apos;t allowed here.
+                  </div>
+                )}
               </div>
 
               {workspaces.length > 0 && (
@@ -349,8 +375,14 @@ export function UploadForm({
                   <select
                     value={dest}
                     onChange={(e) => {
-                      setDest(e.target.value);
-                      if (!e.target.value && visibility === "team") setVisibility("allowlist");
+                      const next = e.target.value;
+                      setDest(next);
+                      const ws = workspaces.find((w) => w.id === next) || null;
+                      if (visibility === "team" && (!ws || ws.plan !== "team")) {
+                        setVisibility("allowlist");
+                      }
+                      const nextTtls = ws ? ws.allowedTtls : personalTtls;
+                      if (!nextTtls.includes(ttl)) setTtl(nextTtls[nextTtls.length - 1]);
                     }}
                     className="field"
                   >
@@ -377,10 +409,16 @@ export function UploadForm({
                   </button>
                   <button
                     className={`seg${visibility === "team" ? " active" : ""}`}
-                    onClick={() => dest && setVisibility("team")}
-                    disabled={!dest}
-                    style={!dest ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
-                    title={!dest ? "Pick a workspace destination first" : undefined}
+                    onClick={() => dest && !teamLocked && setVisibility("team")}
+                    disabled={!dest || teamLocked}
+                    style={!dest || teamLocked ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                    title={
+                      !dest
+                        ? "Pick a workspace destination first"
+                        : teamLocked
+                          ? "Team visibility requires the Team plan — upgrade from the workspace page"
+                          : undefined
+                    }
                   >
                     <Users size={14} />
                     Whole team

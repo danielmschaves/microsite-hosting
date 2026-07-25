@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { requireWorkspaceRole } from "@/lib/teams";
+import { planForWorkspace } from "@/lib/plan";
 
 export const runtime = "nodejs";
 
@@ -15,7 +16,13 @@ export async function GET(
   const res = await requireWorkspaceRole(id, "admin");
   if ("error" in res) return res.error;
 
-  const auditDays = 30; // plan-derived in Phase 3
+  const auditDays = planForWorkspace(res.workspace).auditDays;
+  if (auditDays === 0) {
+    return NextResponse.json(
+      { error: "Audit log requires the Team plan", upgradeUrl: `/teams/${id}` },
+      { status: 402 },
+    );
+  }
 
   const rows = await query<{
     type: string;

@@ -26,7 +26,9 @@ const TTL_LABEL: Record<string, string> = {
   "24h": "24 hours",
   "7d": "7 days",
   "30d": "30 days",
+  "90d": "90 days",
 };
+const ALL_TTLS = ["24h", "7d", "30d", "90d"] as const;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 export interface ManagedSite {
@@ -69,18 +71,24 @@ export function ManagePanel({
   viewers: initialViewers,
   stats,
   files,
+  allowedTtls = ["24h", "7d"],
 }: {
   site: ManagedSite;
   viewers: string[];
   stats: ManagedStats;
   files: { name: string; size: number }[];
+  allowedTtls?: string[];
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const [ttl, setTtl] = useState(site.ttlPreset in TTL_LABEL ? site.ttlPreset : "7d");
+  const [ttl, setTtl] = useState(
+    allowedTtls.includes(site.ttlPreset)
+      ? site.ttlPreset
+      : allowedTtls[allowedTtls.length - 1] || "7d",
+  );
   const [slugDraft, setSlugDraft] = useState(site.slug);
   const [visibility, setVisibility] = useState(site.visibility);
   const [viewers, setViewers] = useState(initialViewers);
@@ -293,12 +301,22 @@ export function ManagePanel({
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <div className="seg-group" style={{ flex: 1 }}>
-            {(["24h", "7d", "30d"] as const).map((k) => (
-              <button key={k} className={`seg${ttl === k ? " active" : ""}`} onClick={() => setTtl(k)}>
-                <Clock size={14} />
-                {TTL_LABEL[k]}
-              </button>
-            ))}
+            {ALL_TTLS.map((k) => {
+              const locked = !allowedTtls.includes(k);
+              return (
+                <button
+                  key={k}
+                  className={`seg${ttl === k ? " active" : ""}`}
+                  disabled={locked}
+                  style={locked ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                  title={locked ? "Longer TTLs require the Team plan" : undefined}
+                  onClick={() => setTtl(k)}
+                >
+                  <Clock size={14} />
+                  {TTL_LABEL[k]}
+                </button>
+              );
+            })}
           </div>
           <button onClick={saveTtl} disabled={busy !== null} className="btn btn-primary">
             <Check size={14} />

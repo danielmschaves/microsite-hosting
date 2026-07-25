@@ -60,7 +60,15 @@ services:
       S3_SECRET_ACCESS_KEY: minioadmin
       NEXT_PUBLIC_BASE_URL: ${NEXT_PUBLIC_BASE_URL:-http://localhost:3000}
       CRON_SECRET: ${CRON_SECRET:-dev-insecure-cron-secret}
-      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-262144000}
+      # v1.0 — all optional; absence = graceful degradation
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_TEAM_PRICE_ID: ${STRIPE_TEAM_PRICE_ID:-}
+      # Treat every workspace as Team plan without Stripe (dev only; blocked in prod)
+      PLAN_FAKE_TEAM: ${PLAN_FAKE_TEAM:-false}
     ports:
       - "3000:3000"
 

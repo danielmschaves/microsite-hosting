@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { BillingCard, type BillingInfo } from "@/components/BillingCard";
 import {
   ArrowLeft,
   Users,
@@ -66,6 +67,7 @@ export function TeamPanel({
   invites,
   sites = [],
   audit = [],
+  billing,
 }: {
   workspace: { id: string; name: string; plan: string; maxTtl: string | null };
   myRole: string;
@@ -74,6 +76,7 @@ export function TeamPanel({
   invites: TeamInvite[];
   sites?: TeamSite[];
   audit?: AuditEntry[];
+  billing?: BillingInfo;
 }) {
   const router = useRouter();
   const isAdmin = myRole === "admin" || myRole === "owner";
@@ -469,6 +472,9 @@ export function TeamPanel({
           ))}
         </div>
       )}
+
+      {/* billing */}
+      {billing && <BillingCard info={billing} />}
 
       {/* settings (admin+) */}
       {isAdmin && (

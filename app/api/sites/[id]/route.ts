@@ -1,12 +1,21 @@
 import { NextResponse } from "next/server";
-import { query } from "@/lib/db";
+import { query, type WorkspaceRow } from "@/lib/db";
 import { deletePrefix } from "@/lib/storage";
 import { expiresAtFrom, isTtlPreset } from "@/lib/ttl";
 import { normalizeSlug } from "@/lib/slug";
 import { authorizeSiteManage, isVisibility } from "@/lib/authz";
+import { planForWorkspace, allowedTtlPresets } from "@/lib/plan";
 import { track } from "@/lib/events";
 
 export const runtime = "nodejs";
+
+async function workspaceFor(workspaceId: string | null): Promise<WorkspaceRow | null> {
+  if (!workspaceId) return null;
+  const rows = await query<WorkspaceRow>("SELECT * FROM workspaces WHERE id = $1", [
+    workspaceId,
+  ]);
+  return rows[0] ?? null;
+}
 
 // DELETE — move to trash (default) or purge permanently (?permanent=true).
 // Owner always; workspace admins may trash/purge team-workspace sites.
@@ -124,6 +133,18 @@ export async function PATCH(
         { status: 400 },
       );
     }
+    if (visibility === "team") {
+      const ws = await workspaceFor(site.workspace_id);
+      if (planForWorkspace(ws).id !== "team") {
+        return NextResponse.json(
+          {
+            error: "Team visibility requires the Team plan",
+            upgradeUrl: `/teams/${site.workspace_id}`,
+          },
+          { status: 402 },
+        );
+      }
+    }
     await query("UPDATE sites SET visibility = $1 WHERE id = $2", [visibility, id]);
     await track("visibility_changed", {
       siteId: id,
@@ -171,6 +192,20 @@ export async function PATCH(
       { error: "Provide { ttl }, { slug }, { visibility } or { action }" },
       { status: 400 },
     );
+  }
+  {
+    const ws = await workspaceFor(site.workspace_id);
+    const plan = planForWorkspace(ws);
+    const allowed = allowedTtlPresets(plan, ws?.max_ttl_preset ?? null);
+    if (!allowed.includes(ttl)) {
+      return NextResponse.json(
+        {
+          error: `ttl must be one of ${allowed.join(", ")} on this plan`,
+          ...(plan.id === "free" ? { upgradeUrl: site.workspace_id ? `/teams/${site.workspace_id}` : "/teams" } : {}),
+        },
+        { status: 402 },
+      );
+    }
   }
   const expiresAt = expiresAtFrom(ttl);
   await query("UPDATE sites SET ttl_preset = $1, expires_at = $2 WHERE id = $3", [

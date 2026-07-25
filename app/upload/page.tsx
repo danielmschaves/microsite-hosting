@@ -2,7 +2,13 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { query } from "@/lib/db";
 import { getWorkspacesFor } from "@/lib/teams";
-import { FREE_SITE_LIMIT, FREE_STORAGE_BYTES } from "@/lib/plan";
+import {
+  FREE_SITE_LIMIT,
+  FREE_STORAGE_BYTES,
+  FREE_PLAN,
+  planForWorkspace,
+  allowedTtlPresets,
+} from "@/lib/plan";
 import { AppBar } from "@/components/AppBar";
 import { UploadForm } from "@/components/UploadForm";
 
@@ -32,7 +38,16 @@ export default async function UploadPage() {
         storageLimitBytes={FREE_STORAGE_BYTES}
       />
       <UploadForm
-        workspaces={workspaces.map((w) => ({ id: w.id, name: w.name }))}
+        workspaces={workspaces.map((w) => {
+          const plan = planForWorkspace(w);
+          return {
+            id: w.id,
+            name: w.name,
+            plan: plan.id,
+            allowedTtls: allowedTtlPresets(plan, w.max_ttl_preset),
+          };
+        })}
+        personalTtls={allowedTtlPresets(FREE_PLAN)}
       />
     </>
   );

@@ -1,16 +1,19 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { query, type SiteRow } from "@/lib/db";
+import { query, type SiteRow, type WorkspaceRow } from "@/lib/db";
 import { putObject } from "@/lib/storage";
 import { generateSlug, normalizeSlug } from "@/lib/slug";
 import { expiresAtFrom, isTtlPreset } from "@/lib/ttl";
 import { getMembership } from "@/lib/teams";
 import { isVisibility, type Visibility } from "@/lib/authz";
+import { planForWorkspace, allowedTtlPresets, fakeTeam } from "@/lib/plan";
 import { track } from "@/lib/events";
 
 export const runtime = "nodejs";
 
-const MAX_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 26_214_400);
+// Extra body cap for this multipart route only (Vercel functions cap ~4.5MB
+// anyway; pre-signed uploads are the large-file path).
+const MAX_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 262_144_000);
 const MAX_PAGES = 20;
 
 /**
@@ -58,6 +61,7 @@ export async function POST(req: Request) {
     );
   }
   const visibility: Visibility = visibilityRaw;
+  let workspace: WorkspaceRow | null = null;
   if (workspaceId) {
     const membership = await getMembership(email, workspaceId).catch(() => null);
     if (!membership) {
@@ -66,6 +70,12 @@ export async function POST(req: Request) {
         { status: 403 },
       );
     }
+    workspace =
+      (
+        await query<WorkspaceRow>("SELECT * FROM workspaces WHERE id = $1", [
+          workspaceId,
+        ])
+      )[0] ?? null;
   }
   if (visibility === "team" && !workspaceId) {
     return NextResponse.json(
@@ -73,18 +83,66 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
+
+  // ---- plan gates (PRD §7) — apply to new uploads only ---------------------
+  const plan = planForWorkspace(workspace);
+  if (visibility === "team" && plan.id !== "team") {
+    return NextResponse.json(
+      {
+        error: "Team visibility requires the Team plan",
+        upgradeUrl: `/teams/${workspaceId}`,
+      },
+      { status: 402 },
+    );
+  }
+  const allowedTtls = allowedTtlPresets(plan, workspace?.max_ttl_preset ?? null);
+  if (!isTtlPreset(ttl) || !allowedTtls.includes(ttl)) {
+    return NextResponse.json(
+      {
+        error: `ttl must be one of ${allowedTtls.join(", ")} on this plan`,
+        ...(plan.id === "free" ? { upgradeUrl: workspaceId ? `/teams/${workspaceId}` : "/teams" } : {}),
+      },
+      { status: isTtlPreset(ttl) ? 402 : 400 },
+    );
+  }
+  // Site-count gate: team workspaces count their own sites; free contexts
+  // count the owner's live sites outside team-plan workspaces.
+  if (plan.id === "team" && workspaceId) {
+    const wsCount = await query<{ count: string }>(
+      "SELECT count(*) FROM sites WHERE workspace_id = $1 AND deleted_at IS NULL",
+      [workspaceId],
+    );
+    if (Number(wsCount[0].count) >= plan.siteLimit) {
+      return NextResponse.json(
+        { error: `Workspace limit of ${plan.siteLimit} active sites reached` },
+        { status: 402 },
+      );
+    }
+  } else {
+    const freeCount = await query<{ count: string }>(
+      `SELECT count(*) FROM sites s
+        LEFT JOIN workspaces w ON w.id = s.workspace_id
+        WHERE s.owner_email = $1 AND s.deleted_at IS NULL
+          AND (s.workspace_id IS NULL OR ${fakeTeam ? "false" : "w.plan <> 'team'"})`,
+      [email],
+    );
+    if (Number(freeCount[0].count) >= plan.siteLimit) {
+      return NextResponse.json(
+        {
+          error: `Free plan limit of ${plan.siteLimit} active sites reached — delete one or upgrade a workspace`,
+          upgradeUrl: "/teams",
+        },
+        { status: 402 },
+      );
+    }
+  }
   if (rawFiles.length > MAX_PAGES) {
     return NextResponse.json(
       { error: `At most ${MAX_PAGES} pages per site` },
       { status: 400 },
     );
   }
-  if (!isTtlPreset(ttl)) {
-    return NextResponse.json(
-      { error: "ttl must be one of 24h, 7d, 30d" },
-      { status: 400 },
-    );
-  }
+  // (TTL validity + plan cap already enforced above.)
 
   // Validate + sanitize every file (single self-contained .html pages only).
   const files: { name: string; file: File }[] = [];
@@ -115,9 +173,12 @@ export async function POST(req: Request) {
     totalBytes += f.size;
     files.push({ name, file: f });
   }
-  if (totalBytes > MAX_BYTES) {
+  const sizeCap = Math.min(plan.maxSiteBytes, MAX_BYTES);
+  if (totalBytes > sizeCap) {
     return NextResponse.json(
-      { error: `Files exceed max total size of ${MAX_BYTES} bytes` },
+      {
+        error: `Files exceed the ${(sizeCap / (1024 * 1024)).toFixed(0)} MB site limit${plan.id === "free" ? " (Team plan allows 250 MB)" : ""}`,
+      },
       { status: 413 },
     );
   }
