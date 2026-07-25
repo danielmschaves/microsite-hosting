@@ -64,12 +64,15 @@ export function UploadForm({
   const [chips, setChips] = useState<string[]>([]);
   const [chipInput, setChipInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [published, setPublished] = useState<{
     slug: string;
     url: string;
     pages: number;
   } | null>(null);
+
+  const FALLBACK_MAX = 4 * 1024 * 1024; // multipart route cap
 
   useEffect(() => {
     setHost(`${window.location.host}/s/`);
@@ -130,6 +133,63 @@ export function UploadForm({
     }
   }
 
+  function collectViewers(): string[] {
+    const viewers = visibility === "allowlist" ? [...chips] : [];
+    if (
+      visibility === "allowlist" &&
+      chipInput.trim() &&
+      EMAIL_RE.test(chipInput.trim().toLowerCase())
+    ) {
+      viewers.push(chipInput.trim().toLowerCase());
+    }
+    return viewers;
+  }
+
+  /** POST one file straight to S3 using a presigned policy, with progress. */
+  function s3Post(
+    url: string,
+    fields: Record<string, string>,
+    file: File,
+    onProgress: (fraction: number) => void,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const fd = new FormData();
+      for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+      fd.append("file", file); // must be the last field in a POST policy
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", url);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(e.loaded / e.total);
+      };
+      xhr.onload = () =>
+        xhr.status >= 200 && xhr.status < 300
+          ? resolve()
+          : reject(new Error(`Storage rejected the upload (${xhr.status})`));
+      xhr.onerror = () => reject(new Error("network"));
+      xhr.send(fd);
+    });
+  }
+
+  /** Fallback: multipart through the app server (small uploads only). */
+  async function publishViaServer(viewers: string[]) {
+    const body = new FormData();
+    for (const f of files) body.append("file", f);
+    body.set("ttl", ttl);
+    if (files.length > 1 && indexName) body.set("index", indexName);
+    if (slug.trim()) body.set("slug", slug.trim());
+    if (dest) body.set("workspaceId", dest);
+    body.set("visibility", visibility);
+    if (viewers.length) body.set("viewers", viewers.join(","));
+
+    const res = await fetch("/api/upload", { method: "POST", body });
+    const data = await res.json();
+    if (!res.ok) setError(data.error || "Upload failed.");
+    else {
+      setPublished({ slug: data.slug, url: data.url, pages: data.pages });
+      router.refresh();
+    }
+  }
+
   async function publish() {
     if (files.length === 0) {
       setError("Add at least one HTML file.");
@@ -141,36 +201,80 @@ export function UploadForm({
     }
     setBusy(true);
     setError(null);
-    try {
-      const body = new FormData();
-      for (const f of files) body.append("file", f);
-      body.set("ttl", ttl);
-      if (files.length > 1 && indexName) body.set("index", indexName);
-      if (slug.trim()) body.set("slug", slug.trim());
-      if (dest) body.set("workspaceId", dest);
-      body.set("visibility", visibility);
-      const viewers = visibility === "allowlist" ? [...chips] : [];
-      if (
-        visibility === "allowlist" &&
-        chipInput.trim() &&
-        EMAIL_RE.test(chipInput.trim().toLowerCase())
-      ) {
-        viewers.push(chipInput.trim().toLowerCase());
-      }
-      if (viewers.length) body.set("viewers", viewers.join(","));
+    setProgress(null);
+    const viewers = collectViewers();
+    const totalBytes = files.reduce((s, f) => s + f.size, 0);
 
-      const res = await fetch("/api/upload", { method: "POST", body });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "Upload failed.");
-      } else {
+    try {
+      // Preferred path: presigned browser->S3 upload (no server body cap).
+      const presignRes = await fetch("/api/upload/presign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          files: files.map((f) => ({ name: f.name, size: f.size })),
+          ttl,
+          workspaceId: dest || undefined,
+          visibility,
+        }),
+      });
+      const presign = await presignRes.json().catch(() => ({}));
+      if (!presignRes.ok) {
+        // Validation/gate errors are real answers — surface them. Only an
+        // unavailable presign service falls back.
+        if (presignRes.status === 503 && totalBytes <= FALLBACK_MAX) {
+          await publishViaServer(viewers);
+        } else {
+          setError(presign.error || "Upload failed.");
+        }
+        return;
+      }
+
+      try {
+        const done: number[] = files.map(() => 0);
+        setProgress(0);
+        for (let i = 0; i < files.length; i++) {
+          const target = (presign.files as { name: string; url: string; fields: Record<string, string> }[])[i];
+          await s3Post(target.url, target.fields, files[i], (frac) => {
+            done[i] = frac * files[i].size;
+            setProgress(
+              Math.round((done.reduce((s, x) => s + x, 0) / totalBytes) * 100),
+            );
+          });
+        }
+      } catch (s3err) {
+        // Storage unreachable (network/CORS) — retry small uploads via server.
+        if (totalBytes <= FALLBACK_MAX) {
+          setProgress(null);
+          await publishViaServer(viewers);
+          return;
+        }
+        throw s3err;
+      }
+
+      const completeRes = await fetch("/api/upload/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uploadId: presign.uploadId,
+          ttl,
+          slug: slug.trim() || undefined,
+          index: files.length > 1 && indexName ? indexName : undefined,
+          viewers: viewers.join(","),
+          workspaceId: dest || undefined,
+          visibility,
+        }),
+      });
+      const data = await completeRes.json();
+      if (!completeRes.ok) setError(data.error || "Upload failed.");
+      else {
         setPublished({ slug: data.slug, url: data.url, pages: data.pages });
         router.refresh();
       }
-    } catch {
-      setError("Network error during upload.");
+    } catch (err) {
+      setError(err instanceof Error && err.message !== "network" ? err.message : "Network error during upload.");
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -474,11 +578,18 @@ export function UploadForm({
             <button onClick={publish} disabled={busy || files.length === 0} className="btn btn-primary" style={{ width: "100%", padding: "12px 16px", font: "700 14px/1 var(--font-ui)" }}>
               <Rocket size={16} />
               {busy
-                ? "Publishing…"
+                ? progress !== null
+                  ? `Uploading… ${progress}%`
+                  : "Publishing…"
                 : files.length > 1
                   ? `Publish ${files.length}-page site`
                   : "Publish private site"}
             </button>
+            {progress !== null && (
+              <div style={{ marginTop: 10, height: 6, borderRadius: 999, background: "var(--surface-2)", border: "1px solid var(--border)", overflow: "hidden" }}>
+                <div style={{ width: `${progress}%`, height: "100%", background: "var(--accent)", transition: "width .2s" }} />
+              </div>
+            )}
             {error && (
               <div style={{ marginTop: 12, padding: "9px 11px", borderRadius: "var(--r-md)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)", color: "var(--text)", font: "500 12px/1.4 var(--font-ui)" }}>
                 {error}

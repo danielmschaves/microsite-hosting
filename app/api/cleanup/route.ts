@@ -54,9 +54,30 @@ async function runCleanup(req: Request) {
     }
   }
 
+  // Phase 3 — orphaned presigned uploads: started but never completed.
+  const staleUploads = await query<{ id: string; s3_prefix: string }>(
+    `SELECT id, s3_prefix FROM pending_uploads
+      WHERE completed_at IS NULL AND created_at <= now() - interval '24 hours'`,
+  );
+  let orphansCleaned = 0;
+  for (const u of staleUploads) {
+    try {
+      await deletePrefix(u.s3_prefix);
+      await query("DELETE FROM pending_uploads WHERE id = $1", [u.id]);
+      orphansCleaned++;
+    } catch (err) {
+      console.error(`[cleanup] orphan upload purge failed for ${u.id}`, err);
+    }
+  }
+  // Completed rows are pure bookkeeping — drop them after a week.
+  await query(
+    "DELETE FROM pending_uploads WHERE completed_at IS NOT NULL AND completed_at <= now() - interval '7 days'",
+  );
+
   return NextResponse.json({
     trashed: trashed.length,
     purged: purgeResults.filter((r) => r.ok).length,
+    orphansCleaned,
     purgeResults,
   });
 }

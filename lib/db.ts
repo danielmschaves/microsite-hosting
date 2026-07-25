@@ -144,6 +144,20 @@ CREATE INDEX IF NOT EXISTS events_workspace_idx ON events (workspace_id, created
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces(id);
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'allowlist';
 CREATE INDEX IF NOT EXISTS sites_workspace_idx ON sites (workspace_id) WHERE deleted_at IS NULL;
+
+-- Pre-signed browser->S3 uploads (v1.0 phase 4). The prefix becomes the
+-- site's final prefix at completion — no copy step. Stale incomplete rows are
+-- purged by the cleanup cron.
+CREATE TABLE IF NOT EXISTS pending_uploads (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_email  TEXT NOT NULL,
+  workspace_id UUID,
+  s3_prefix    TEXT NOT NULL,
+  files        JSONB NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS pending_uploads_stale_idx ON pending_uploads (created_at) WHERE completed_at IS NULL;
 `;
 
 export async function migrate(): Promise<void> {
