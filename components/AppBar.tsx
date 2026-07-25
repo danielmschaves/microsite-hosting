@@ -1,12 +1,12 @@
 import Link from "next/link";
-import { ShieldCheck, LayoutGrid, Settings, HardDrive } from "lucide-react";
+import { ShieldCheck, LayoutGrid, Settings, HardDrive, Users } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { SignOutButton } from "@/components/AuthButtons";
 
 export interface AppBarProps {
   email: string;
   name?: string | null;
-  active: "sites" | "settings";
+  active: "sites" | "teams" | "settings";
   usedBytes: number;
   siteCount: number;
   siteLimit: number;
@@ -93,6 +93,7 @@ export function AppBar({
         </Link>
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           {navItem("/dashboard", "Sites", <LayoutGrid size={14} />, active === "sites")}
+          {navItem("/teams", "Teams", <Users size={14} />, active === "teams")}
           {navItem("/settings", "Settings", <Settings size={14} />, active === "settings")}
         </div>
       </div>

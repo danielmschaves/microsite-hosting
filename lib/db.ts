@@ -23,6 +23,19 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   return res.rows;
 }
 
+export interface WorkspaceRow {
+  id: string;
+  name: string;
+  created_by: string;
+  plan: string;
+  max_ttl_preset: string | null;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+  subscription_status: string | null;
+  seats: number;
+  created_at: Date;
+}
+
 export interface SiteRow {
   id: string;
   slug: string;
@@ -85,6 +98,44 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS events_site_idx ON events (site_id, type, created_at);
+
+-- Teams / workspaces (v1.0) -------------------------------------------------
+CREATE TABLE IF NOT EXISTS workspaces (
+  id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name                   TEXT NOT NULL,
+  created_by             TEXT NOT NULL,
+  plan                   TEXT NOT NULL DEFAULT 'free',
+  max_ttl_preset         TEXT,
+  stripe_customer_id     TEXT,
+  stripe_subscription_id TEXT,
+  subscription_status    TEXT,
+  seats                  INTEGER NOT NULL DEFAULT 0,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS workspace_members (
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  email        TEXT NOT NULL,
+  role         TEXT NOT NULL DEFAULT 'member',
+  joined_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, email)
+);
+CREATE INDEX IF NOT EXISTS workspace_members_email_idx ON workspace_members (email);
+
+CREATE TABLE IF NOT EXISTS workspace_invites (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  email        TEXT NOT NULL,
+  role         TEXT NOT NULL DEFAULT 'member',
+  token        TEXT NOT NULL UNIQUE,
+  invited_by   TEXT NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at   TIMESTAMPTZ NOT NULL,
+  accepted_at  TIMESTAMPTZ
+);
+
+ALTER TABLE events ADD COLUMN IF NOT EXISTS workspace_id UUID;
+CREATE INDEX IF NOT EXISTS events_workspace_idx ON events (workspace_id, created_at);
 `;
 
 export async function migrate(): Promise<void> {

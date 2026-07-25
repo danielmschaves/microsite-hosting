@@ -12,16 +12,37 @@ export type EventType =
   | "viewer_removed"
   | "site_trashed"
   | "site_restored"
-  | "site_purged";
+  | "site_purged"
+  | "workspace_created"
+  | "workspace_renamed"
+  | "member_invited"
+  | "member_joined"
+  | "member_removed"
+  | "member_role_changed"
+  | "ttl_policy_changed"
+  | "visibility_changed"
+  | "site_force_expired"
+  | "subscription_updated";
 
 export async function track(
   type: EventType,
-  opts: { siteId?: string; actor?: string; meta?: Record<string, unknown> } = {},
+  opts: {
+    siteId?: string;
+    workspaceId?: string;
+    actor?: string;
+    meta?: Record<string, unknown>;
+  } = {},
 ): Promise<void> {
   try {
     await query(
-      "INSERT INTO events (type, site_id, actor, meta) VALUES ($1, $2, $3, $4)",
-      [type, opts.siteId ?? null, opts.actor ?? null, JSON.stringify(opts.meta ?? {})],
+      "INSERT INTO events (type, site_id, workspace_id, actor, meta) VALUES ($1, $2, $3, $4, $5)",
+      [
+        type,
+        opts.siteId ?? null,
+        opts.workspaceId ?? null,
+        opts.actor ?? null,
+        JSON.stringify(opts.meta ?? {}),
+      ],
     );
   } catch (err) {
     // Analytics must never break product flows.
