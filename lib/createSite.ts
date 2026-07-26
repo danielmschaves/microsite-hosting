@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { query, type SiteRow, type WorkspaceRow } from "./db";
+import { query, withTransaction, type SiteRow, type WorkspaceRow } from "./db";
+import { deletePrefix } from "./storage";
 import { generateSlug, normalizeSlug } from "./slug";
 import { expiresAtFrom, isTtlPreset, type TtlPreset } from "./ttl";
 import { getMembership } from "./teams";
@@ -57,9 +58,45 @@ export async function validateUploadRequest(opts: {
   ttl: string;
   workspaceId: string | null;
   visibilityRaw: string;
+  /**
+   * Re-upload to an existing owned slug (new version). Destination and
+   * visibility are pinned to the site's current settings — the request's
+   * workspace/visibility params are ignored — and the site-count gate is
+   * skipped (it is not a new site).
+   */
+  updating?: SiteRow;
 }): Promise<{ error: NextResponse } | ValidatedUpload> {
-  const { email, ttl, workspaceId } = opts;
+  const { email, ttl } = opts;
 
+  if (opts.updating) {
+    const site = opts.updating;
+    const workspace = site.workspace_id
+      ? ((
+          await query<WorkspaceRow>("SELECT * FROM workspaces WHERE id = $1", [
+            site.workspace_id,
+          ])
+        )[0] ?? null)
+      : null;
+    const plan = planForWorkspace(workspace);
+    const allowedTtls = allowedTtlPresets(plan, workspace?.max_ttl_preset ?? null);
+    if (!isTtlPreset(ttl) || !allowedTtls.includes(ttl)) {
+      return {
+        error: NextResponse.json(
+          { error: `ttl must be one of ${allowedTtls.join(", ")} on this plan` },
+          { status: isTtlPreset(ttl) ? 402 : 400 },
+        ),
+      };
+    }
+    return {
+      workspace,
+      workspaceId: site.workspace_id,
+      visibility: site.visibility as Visibility,
+      plan,
+      ttl,
+    };
+  }
+
+  const workspaceId = opts.workspaceId;
   if (!isVisibility(opts.visibilityRaw)) {
     return {
       error: NextResponse.json(
@@ -181,10 +218,19 @@ export function resolveIndex(
   return { indexName: auto };
 }
 
-/** Validate a requested slug or generate a unique one. */
+/**
+ * Validate a requested slug or generate a unique one. When the requested
+ * slug belongs to a live site owned by `email`, the result carries that
+ * site: the upload becomes a re-publish (new version, same URL). A live
+ * slug owned by anyone else stays a hard 409 — never let a re-upload
+ * take over someone else's slug.
+ */
 export async function resolveSlug(
   requestedSlug: string,
-): Promise<{ slug: string } | { error: string; status: number }> {
+  email?: string,
+): Promise<
+  { slug: string; existing?: SiteRow } | { error: string; status: number }
+> {
   if (requestedSlug) {
     const slug = normalizeSlug(requestedSlug);
     if (!slug) {
@@ -193,11 +239,17 @@ export async function resolveSlug(
         status: 400,
       };
     }
-    const existing = await query(
-      "SELECT 1 FROM sites WHERE slug = $1 AND deleted_at IS NULL",
+    const existing = await query<SiteRow>(
+      "SELECT * FROM sites WHERE slug = $1 AND deleted_at IS NULL",
       [slug],
     );
-    if (existing.length > 0) return { error: "Slug already taken", status: 409 };
+    if (existing.length > 0) {
+      const site = existing[0];
+      if (email && site.owner_email.toLowerCase() === email.toLowerCase()) {
+        return { slug, existing: site };
+      }
+      return { error: "Slug already taken", status: 409 };
+    }
     return { slug };
   }
   for (let i = 0; i < 8; i++) {
@@ -246,6 +298,20 @@ export async function createSiteRecord(opts: {
   );
   const site = inserted[0];
 
+  // Version history starts at 1 so every site has a uniform trail.
+  await query(
+    `INSERT INTO site_versions (site_id, version, s3_prefix, index_key, size_bytes, page_count, created_by)
+     VALUES ($1, 1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING`,
+    [
+      site.id,
+      opts.s3Prefix,
+      `${opts.s3Prefix}${opts.indexName}`,
+      opts.totalBytes,
+      opts.pageCount,
+      opts.email,
+    ],
+  );
+
   const viewers = opts.visibility === "allowlist" ? opts.viewers : [];
   for (const viewer of viewers) {
     await query(
@@ -269,4 +335,140 @@ export async function createSiteRecord(opts: {
   });
 
   return site;
+}
+
+/**
+ * Publish a new version of an existing site (re-upload to the same slug).
+ * The new files are already in storage under `s3Prefix`. Atomically records
+ * the version, flips the sites row to point at it (fresh TTL, notification
+ * markers cleared), and prunes history beyond the plan's version limit.
+ * Storage for pruned versions is deleted after commit — S3 is not part of
+ * the transaction.
+ */
+export async function publishSiteVersion(opts: {
+  site: SiteRow;
+  email: string;
+  s3Prefix: string;
+  indexName: string;
+  totalBytes: number;
+  pageCount: number;
+  ttl: TtlPreset;
+  versionLimit: number;
+}): Promise<{ site: SiteRow; version: number }> {
+  const expiresAt = expiresAtFrom(opts.ttl);
+  const indexKey = `${opts.s3Prefix}${opts.indexName}`;
+
+  const { updated, version, prunedPrefixes } = await withTransaction(
+    async (tx) => {
+      // Serialize concurrent publishes to the same site.
+      await tx("SELECT id FROM sites WHERE id = $1 FOR UPDATE", [opts.site.id]);
+      const next =
+        Number(
+          (
+            await tx<{ max: string | null }>(
+              "SELECT MAX(version) AS max FROM site_versions WHERE site_id = $1",
+              [opts.site.id],
+            )
+          )[0]?.max ?? 0,
+        ) + 1;
+
+      await tx(
+        `INSERT INTO site_versions (site_id, version, s3_prefix, index_key, size_bytes, page_count, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          opts.site.id,
+          next,
+          opts.s3Prefix,
+          indexKey,
+          opts.totalBytes,
+          opts.pageCount,
+          opts.email,
+        ],
+      );
+
+      const updated = (
+        await tx<SiteRow>(
+          `UPDATE sites
+              SET s3_prefix = $1, index_key = $2, size_bytes = $3, page_count = $4,
+                  current_version = $5, ttl_preset = $6, expires_at = $7,
+                  notified_48h_at = NULL, notified_2h_at = NULL
+            WHERE id = $8
+            RETURNING *`,
+          [
+            opts.s3Prefix,
+            indexKey,
+            opts.totalBytes,
+            opts.pageCount,
+            next,
+            opts.ttl,
+            expiresAt,
+            opts.site.id,
+          ],
+        )
+      )[0];
+
+      // Prune beyond the retention window. Never drop a row whose prefix is
+      // the live one (possible after a rollback) — that would delete the
+      // bytes currently being served.
+      const pruned = await tx<{ s3_prefix: string }>(
+        `DELETE FROM site_versions
+          WHERE site_id = $1 AND version <= $2 AND s3_prefix <> $3
+          RETURNING s3_prefix`,
+        [opts.site.id, next - opts.versionLimit, updated.s3_prefix],
+      );
+
+      return {
+        updated,
+        version: next,
+        prunedPrefixes: pruned.map((p) => p.s3_prefix),
+      };
+    },
+  );
+
+  for (const prefix of prunedPrefixes) {
+    try {
+      await deletePrefix(prefix);
+    } catch (err) {
+      console.error(`[versions] prune failed for ${prefix}`, err);
+    }
+  }
+
+  await track("site_version_published", {
+    siteId: opts.site.id,
+    workspaceId: opts.site.workspace_id ?? undefined,
+    actor: opts.email,
+    meta: {
+      version,
+      pages: opts.pageCount,
+      bytes: opts.totalBytes,
+      ttl: opts.ttl,
+      pruned: prunedPrefixes.length,
+    },
+  });
+
+  return { site: updated, version };
+}
+
+/**
+ * Delete ALL storage belonging to a site — the live prefix plus every
+ * retained version prefix — and drop the version rows. The single purge
+ * path used by cron phase 2, ?permanent=true deletes, and restores-gone-
+ * wrong; keeping it centralized prevents orphaned version prefixes.
+ */
+export async function purgeSiteStorage(site: {
+  id: string;
+  s3_prefix: string;
+}): Promise<void> {
+  const versions = await query<{ s3_prefix: string }>(
+    "SELECT DISTINCT s3_prefix FROM site_versions WHERE site_id = $1",
+    [site.id],
+  );
+  const prefixes = new Set<string>([
+    site.s3_prefix,
+    ...versions.map((v) => v.s3_prefix),
+  ]);
+  for (const prefix of prefixes) {
+    await deletePrefix(prefix);
+  }
+  await query("DELETE FROM site_versions WHERE site_id = $1", [site.id]);
 }

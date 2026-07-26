@@ -17,6 +17,8 @@ export interface PlanLimits {
   maxTtl: TtlPreset;
   /** Audit log window in days (0 = no audit access). */
   auditDays: number;
+  /** Retained versions per site (1 = plain overwrite, no history). */
+  versionLimit: number;
 }
 
 export const FREE_PLAN: PlanLimits = {
@@ -25,6 +27,7 @@ export const FREE_PLAN: PlanLimits = {
   maxSiteBytes: 25 * 1024 * 1024,
   maxTtl: "7d",
   auditDays: 0,
+  versionLimit: 1,
 };
 
 export const TEAM_PLAN: PlanLimits = {
@@ -33,6 +36,7 @@ export const TEAM_PLAN: PlanLimits = {
   maxSiteBytes: 250 * 1024 * 1024,
   maxTtl: "90d",
   auditDays: 30,
+  versionLimit: 5,
 };
 
 // Legacy exports (AppBar meter + trash window) — keep stable.

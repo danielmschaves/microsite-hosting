@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { query, type WorkspaceRow } from "@/lib/db";
-import { deletePrefix } from "@/lib/storage";
+import { listPrefix } from "@/lib/storage";
 import { expiresAtFrom, isTtlPreset } from "@/lib/ttl";
 import { normalizeSlug } from "@/lib/slug";
 import { authorizeSiteManage, isVisibility } from "@/lib/authz";
 import { planForWorkspace, allowedTtlPresets } from "@/lib/plan";
+import { purgeSiteStorage } from "@/lib/createSite";
 import { track } from "@/lib/events";
 
 export const runtime = "nodejs";
@@ -31,7 +32,7 @@ export async function DELETE(
   const permanent = new URL(req.url).searchParams.get("permanent") === "true";
 
   if (permanent) {
-    await deletePrefix(site.s3_prefix);
+    await purgeSiteStorage(site);
     await query(
       "UPDATE sites SET deleted_at = COALESCE(deleted_at, now()), purged_at = now() WHERE id = $1",
       [id],
@@ -153,6 +154,29 @@ export async function PATCH(
       meta: { from: site.visibility, to: visibility },
     });
     return NextResponse.json({ ok: true, visibility });
+  }
+
+  // --- set index page --------------------------------------------------------
+  if (typeof body?.index === "string") {
+    const name = body.index;
+    const stored = await listPrefix(site.s3_prefix).catch(() => []);
+    if (!stored.some((f) => f.name === name)) {
+      return NextResponse.json(
+        { error: "index must name one of the site's pages" },
+        { status: 400 },
+      );
+    }
+    await query("UPDATE sites SET index_key = $1 WHERE id = $2", [
+      `${site.s3_prefix}${name}`,
+      id,
+    ]);
+    await track("index_changed", {
+      siteId: id,
+      workspaceId: site.workspace_id ?? undefined,
+      actor: email,
+      meta: { to: name },
+    });
+    return NextResponse.json({ ok: true, index: name });
   }
 
   // --- rename slug ---------------------------------------------------------

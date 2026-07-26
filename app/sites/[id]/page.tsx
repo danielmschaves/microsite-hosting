@@ -1,6 +1,11 @@
 import { notFound, redirect } from "next/navigation";
 import { auth } from "@/auth";
-import { query, type SiteRow, type WorkspaceRow } from "@/lib/db";
+import {
+  query,
+  type SiteRow,
+  type SiteVersionRow,
+  type WorkspaceRow,
+} from "@/lib/db";
 import { listPrefix, type StoredFile } from "@/lib/storage";
 import { statsForSites } from "@/lib/events";
 import {
@@ -66,10 +71,13 @@ export default async function ManageSitePage({
         ])
       )[0] ?? null
     : null;
-  const allowedTtls = allowedTtlPresets(
-    planForWorkspace(workspace),
-    workspace?.max_ttl_preset ?? null,
-  );
+  const plan = planForWorkspace(workspace);
+  const allowedTtls = allowedTtlPresets(plan, workspace?.max_ttl_preset ?? null);
+
+  const versionRows = await query<SiteVersionRow>(
+    "SELECT * FROM site_versions WHERE site_id = $1 ORDER BY version DESC",
+    [id],
+  ).catch(() => [] as SiteVersionRow[]);
 
   return (
     <>
@@ -96,11 +104,20 @@ export default async function ManageSitePage({
           indexName,
           visibility: site.visibility,
           workspaceName: workspace?.name ?? null,
+          currentVersion: Number(site.current_version),
         }}
         allowedTtls={allowedTtls}
         viewers={viewerRows.map((v) => v.viewer_email)}
         stats={stats}
         files={files}
+        versions={versionRows.map((v) => ({
+          version: Number(v.version),
+          sizeBytes: Number(v.size_bytes),
+          pageCount: Number(v.page_count),
+          createdBy: v.created_by,
+          createdAt: new Date(v.created_at).toISOString(),
+        }))}
+        versionLimit={plan.versionLimit}
       />
     </>
   );

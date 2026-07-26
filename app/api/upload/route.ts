@@ -10,6 +10,7 @@ import {
   resolveIndex,
   resolveSlug,
   createSiteRecord,
+  publishSiteVersion,
 } from "@/lib/createSite";
 
 export const runtime = "nodejs";
@@ -47,11 +48,20 @@ export async function POST(req: Request) {
     );
   }
 
+  // Resolve the slug first: a live slug owned by this user turns the upload
+  // into a re-publish (new version, same URL) with the site's own settings.
+  const slugRes = await resolveSlug(requestedSlug, email);
+  if ("error" in slugRes) {
+    return NextResponse.json({ error: slugRes.error }, { status: slugRes.status });
+  }
+  const { slug, existing } = slugRes;
+
   const validated = await validateUploadRequest({
     email,
     ttl,
     workspaceId,
     visibilityRaw,
+    updating: existing,
   });
   if ("error" in validated) return validated.error;
 
@@ -103,36 +113,49 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: idx.error }, { status: 400 });
   }
 
-  const slugRes = await resolveSlug(requestedSlug);
-  if ("error" in slugRes) {
-    return NextResponse.json({ error: slugRes.error }, { status: slugRes.status });
-  }
-  const { slug } = slugRes;
-
   const s3Prefix = `sites/${slug}-${Date.now().toString(36)}/`;
   for (const { name, file } of files) {
     const buffer = Buffer.from(await file.arrayBuffer());
     await putObject(`${s3Prefix}${name}`, buffer, "text/html; charset=utf-8");
   }
 
-  const site = await createSiteRecord({
-    email,
-    slug,
-    s3Prefix,
-    indexName: idx.indexName,
-    totalBytes,
-    pageCount: files.length,
-    ttl: validated.ttl,
-    workspaceId: validated.workspaceId,
-    visibility: validated.visibility,
-    viewers: parseEmails(viewersRaw),
-  });
+  let site;
+  let version = 1;
+  if (existing) {
+    const published = await publishSiteVersion({
+      site: existing,
+      email,
+      s3Prefix,
+      indexName: idx.indexName,
+      totalBytes,
+      pageCount: files.length,
+      ttl: validated.ttl,
+      versionLimit: validated.plan.versionLimit,
+    });
+    site = published.site;
+    version = published.version;
+  } else {
+    site = await createSiteRecord({
+      email,
+      slug,
+      s3Prefix,
+      indexName: idx.indexName,
+      totalBytes,
+      pageCount: files.length,
+      ttl: validated.ttl,
+      workspaceId: validated.workspaceId,
+      visibility: validated.visibility,
+      viewers: parseEmails(viewersRaw),
+    });
+  }
 
   const base = requestBase(req);
   return NextResponse.json({
     slug: site.slug,
     url: `${base}/s/${site.slug}`,
     pages: files.length,
+    version,
+    republished: Boolean(existing),
     expiresAt: new Date(site.expires_at).toISOString(),
   });
 }

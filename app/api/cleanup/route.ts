@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { query, type SiteRow } from "@/lib/db";
 import { deletePrefix } from "@/lib/storage";
+import { purgeSiteStorage } from "@/lib/createSite";
 import { track } from "@/lib/events";
 import { TRASH_DAYS } from "@/lib/plan";
 
@@ -44,7 +45,7 @@ async function runCleanup(req: Request) {
   const purgeResults: { slug: string; ok: boolean }[] = [];
   for (const site of purgeable) {
     try {
-      await deletePrefix(site.s3_prefix);
+      await purgeSiteStorage(site);
       await query("UPDATE sites SET purged_at = now() WHERE id = $1", [site.id]);
       await track("site_purged", { siteId: site.id, meta: { by: "cron" } });
       purgeResults.push({ slug: site.slug, ok: true });
