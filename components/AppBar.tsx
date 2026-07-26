@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { SignOutButton } from "@/components/AuthButtons";
+import { NotificationsBell } from "@/components/NotificationsBell";
 
 export interface AppBarProps {
   email: string;
@@ -109,6 +110,7 @@ export function AppBar({
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <NotificationsBell />
         <span
           style={{
             display: "inline-flex",

@@ -150,5 +150,12 @@ MinIO (local) allows cross-origin by default — no setup needed.
   allows only daily crons). Expired sites stop being *served* at the exact
   expiry moment regardless — the daily job only lags the storage deletion.
   On a Pro plan you can tighten the schedule.
+- **Expiry notifications:** `/api/cleanup` also sends the T-48h / T-2h
+  expiry emails (marker columns make re-runs idempotent). A daily cron
+  delivers the 48h notice late and misses most 2h windows — for full
+  fidelity point an external cron (e.g. cron-job.org, GitHub Actions
+  schedule) at `GET /api/cleanup` with the `Authorization: Bearer
+  $CRON_SECRET` header every 15 minutes. The in-app bell is live either
+  way — it queries expiring sites directly, not the markers.
 - **OAuth on previews:** preview deployments get random URLs that aren't in
   Google's redirect allowlist — test sign-in on the production domain.
