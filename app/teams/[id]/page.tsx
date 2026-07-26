@@ -90,10 +90,10 @@ export default async function TeamPage({
              FROM events e LEFT JOIN sites s ON s.id = e.site_id
             WHERE e.workspace_id = $1
               AND e.type <> 'site_view'
-              AND e.created_at > now() - interval '30 days'
+              AND e.created_at > now() - make_interval(days => $2)
             ORDER BY e.created_at DESC
             LIMIT 100`,
-          [id],
+          [id, wsPlan.auditDays],
         );
 
   return (

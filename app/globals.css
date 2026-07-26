@@ -310,3 +310,109 @@ a:hover {
   margin: 0 auto;
   padding: 30px 30px 100px;
 }
+
+/* pill / badge */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: var(--r-full);
+  font: 600 11px/1 var(--font-ui);
+  white-space: nowrap;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.pill-accent {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--text);
+}
+.pill-success {
+  background: var(--success-soft);
+  border-color: var(--success-border);
+  color: var(--text);
+}
+.pill-warning {
+  background: var(--warning-soft);
+  border-color: var(--warning-border);
+  color: var(--text);
+}
+.pill-danger {
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+  color: var(--text);
+}
+.pill-neutral {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  color: var(--text-muted);
+}
+.pill .mb-mono {
+  font: 600 10.5px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+}
+
+/* stat tile */
+.stat-tile {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 18px;
+}
+.stat-tile .stat-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font: 600 10.5px/1 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  margin-bottom: 12px;
+}
+.stat-tile .stat-value {
+  font: 800 27px/1 var(--font-ui);
+  color: var(--text);
+}
+.stat-tile .stat-unit {
+  font: 600 14px/1 var(--font-mono);
+  color: var(--text-subtle);
+}
+
+/* table header row (uppercase mono, on surface-2) */
+.tbl-head {
+  display: grid;
+  gap: 14px;
+  padding: 10px 20px;
+  background: var(--surface-2);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}
+
+/* banner / inline alert */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 16px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  font: 500 12.5px/1.4 var(--font-ui);
+  color: var(--text);
+}
+.banner-warning {
+  background: var(--warning-soft);
+  border-color: var(--warning-border);
+}
+.banner-danger {
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+}
+.banner-success {
+  background: var(--success-soft);
+  border-color: var(--success-border);
+}

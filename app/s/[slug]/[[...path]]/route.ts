@@ -14,18 +14,10 @@ export async function GET(
 ) {
   const { slug, path } = await params;
 
-  // 1. Require a signed-in user. Unauthenticated viewers are sent to sign-in
-  //    and returned here afterward.
-  const session = await auth();
-  const email = session?.user?.email;
-  if (!email) {
-    const callbackUrl = new URL(req.url).pathname;
-    const loginUrl = new URL("/login", req.url);
-    loginUrl.searchParams.set("callbackUrl", callbackUrl);
-    return NextResponse.redirect(loginUrl);
-  }
-
-  // 2. Look up a live (non-deleted, non-expired) site.
+  // 1. Look up a live (non-deleted, non-expired) site. The lookup precedes
+  //    the session gate so public sites can serve without a login wall; a
+  //    404 leaks nothing new (anonymous viewers got a redirect-then-404
+  //    before, an existence signal either way).
   const rows = await query<SiteRow>(
     `SELECT * FROM sites
       WHERE slug = $1 AND deleted_at IS NULL AND expires_at > now()
@@ -37,10 +29,21 @@ export async function GET(
     return new NextResponse("Not found or expired", { status: 404 });
   }
 
-  // 3. Authorize via the central policy (owner / allowlist / team visibility).
-  const lower = email.toLowerCase();
-  const isOwner = site.owner_email.toLowerCase() === lower;
-  if (!(await canViewSite(site, lower))) {
+  // 2. Session gate: anonymous viewers are allowed through for public sites
+  //    only; everyone else is sent to sign-in and returned here afterward.
+  const session = await auth();
+  const email = session?.user?.email;
+  if (!email && site.visibility !== "public") {
+    const callbackUrl = new URL(req.url).pathname;
+    const loginUrl = new URL("/login", req.url);
+    loginUrl.searchParams.set("callbackUrl", callbackUrl);
+    return NextResponse.redirect(loginUrl);
+  }
+
+  // 3. Authorize via the central policy (owner / allowlist / team / public).
+  const lower = email?.toLowerCase() ?? null;
+  const isOwner = lower !== null && site.owner_email.toLowerCase() === lower;
+  if (lower && !(await canViewSite(site, lower))) {
     return new NextResponse("Forbidden", { status: 403 });
   }
 
@@ -63,8 +66,8 @@ export async function GET(
     await track("site_view", {
       siteId: site.id,
       workspaceId: site.workspace_id ?? undefined,
-      actor: lower,
-      meta: { path: subPath || "index", owner: isOwner },
+      actor: lower ?? undefined,
+      meta: { path: subPath || "index", owner: isOwner, anonymous: !lower },
     });
   }
 
@@ -75,6 +78,10 @@ export async function GET(
   headers.set("Content-Type", object.contentType);
   headers.set("Cache-Control", "private, no-store");
   headers.set("X-Content-Type-Options", "nosniff");
+  if (site.visibility === "public") {
+    // Public means "anyone with the link", not "findable" — keep crawlers out.
+    headers.set("X-Robots-Tag", "noindex, nofollow");
+  }
   headers.set("X-Frame-Options", "SAMEORIGIN");
   headers.set(
     "Content-Security-Policy",

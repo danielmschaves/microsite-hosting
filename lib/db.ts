@@ -23,6 +23,38 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   return res.rows;
 }
 
+/** Query function bound to a single connection (for transactions). */
+export type QueryFn = <T extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params?: unknown[],
+) => Promise<T[]>;
+
+/**
+ * Run `fn` inside a BEGIN/COMMIT block on one pooled connection, rolling
+ * back on any throw. Use the provided query function for every statement
+ * that must be atomic.
+ */
+export async function withTransaction<T>(
+  fn: (tx: QueryFn) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  const tx: QueryFn = async (text, params = []) => {
+    const res = await client.query(text, params as never[]);
+    return res.rows;
+  };
+  try {
+    await client.query("BEGIN");
+    const result = await fn(tx);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export interface WorkspaceRow {
   id: string;
   name: string;
@@ -51,7 +83,33 @@ export interface SiteRow {
   deleted_at: Date | null;
   purged_at: Date | null;
   workspace_id: string | null;
-  visibility: string; // 'only_me' | 'allowlist' | 'team'
+  visibility: string; // 'only_me' | 'allowlist' | 'team' | 'public'
+  current_version: number;
+  notified_48h_at: Date | null;
+  notified_2h_at: Date | null;
+}
+
+export interface SiteVersionRow {
+  id: string;
+  site_id: string;
+  version: number;
+  s3_prefix: string;
+  index_key: string;
+  size_bytes: number;
+  page_count: number;
+  created_by: string;
+  created_at: Date;
+}
+
+export interface ApiTokenRow {
+  id: string;
+  owner_email: string;
+  name: string;
+  token_hash: string;
+  token_prefix: string;
+  created_at: Date;
+  last_used_at: Date | null;
+  revoked_at: Date | null;
 }
 
 // Idempotent schema creation. Runs on server startup (see instrumentation.ts)
@@ -158,6 +216,43 @@ CREATE TABLE IF NOT EXISTS pending_uploads (
   completed_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS pending_uploads_stale_idx ON pending_uploads (created_at) WHERE completed_at IS NULL;
+
+-- Versioning (v1.0): every publish (including the first) records a version.
+-- The sites row is the live pointer — s3_prefix/index_key/size_bytes/
+-- page_count always describe the *current* version; rollback flips the
+-- pointer to an older version's values without moving any bytes.
+CREATE TABLE IF NOT EXISTS site_versions (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  site_id     UUID NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  version     INTEGER NOT NULL,
+  s3_prefix   TEXT NOT NULL,
+  index_key   TEXT NOT NULL,
+  size_bytes  BIGINT NOT NULL,
+  page_count  INTEGER NOT NULL,
+  created_by  TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (site_id, version)
+);
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS current_version INTEGER NOT NULL DEFAULT 1;
+
+-- Personal access tokens for the REST v1 API. Only a sha256 hash of the
+-- secret is stored; token_prefix is the display stub ("mb_live_ab12").
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_email  TEXT NOT NULL,
+  name         TEXT NOT NULL,
+  token_hash   TEXT NOT NULL UNIQUE,
+  token_prefix TEXT NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at TIMESTAMPTZ,
+  revoked_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS api_tokens_owner_idx ON api_tokens (owner_email);
+
+-- Expiry notifications: double-send markers, cleared when the TTL is
+-- extended or the site is restored.
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS notified_48h_at TIMESTAMPTZ;
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS notified_2h_at TIMESTAMPTZ;
 `;
 
 export async function migrate(): Promise<void> {

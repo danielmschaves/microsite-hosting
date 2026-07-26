@@ -10,6 +10,7 @@ import {
   resolveIndex,
   resolveSlug,
   createSiteRecord,
+  publishSiteVersion,
 } from "@/lib/createSite";
 
 export const runtime = "nodejs";
@@ -59,13 +60,22 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Upload already completed" }, { status: 409 });
   }
 
+  // Resolve the slug first: a live slug owned by this user turns the upload
+  // into a re-publish (new version, same URL) with the site's own settings.
+  const slugRes = await resolveSlug(requestedSlug, email);
+  if ("error" in slugRes) {
+    return NextResponse.json({ error: slugRes.error }, { status: slugRes.status });
+  }
+
   // Re-run the full validation (plan/TTL/visibility/counts) at completion
-  // time — state may have changed since presign.
+  // time — state may have changed since presign. In update mode the gates
+  // run against the existing site's own workspace plan.
   const validated = await validateUploadRequest({
     email,
     ttl,
     workspaceId,
     visibilityRaw,
+    updating: slugRes.existing,
   });
   if ("error" in validated) return validated.error;
 
@@ -116,23 +126,35 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: idx.error }, { status: 400 });
   }
 
-  const slugRes = await resolveSlug(requestedSlug);
-  if ("error" in slugRes) {
-    return NextResponse.json({ error: slugRes.error }, { status: slugRes.status });
+  let site;
+  let version = 1;
+  if (slugRes.existing) {
+    const published = await publishSiteVersion({
+      site: slugRes.existing,
+      email,
+      s3Prefix: pending.s3_prefix,
+      indexName: idx.indexName,
+      totalBytes,
+      pageCount: usable.length,
+      ttl: validated.ttl,
+      versionLimit: validated.plan.versionLimit,
+    });
+    site = published.site;
+    version = published.version;
+  } else {
+    site = await createSiteRecord({
+      email,
+      slug: slugRes.slug,
+      s3Prefix: pending.s3_prefix,
+      indexName: idx.indexName,
+      totalBytes,
+      pageCount: usable.length,
+      ttl: validated.ttl,
+      workspaceId: validated.workspaceId,
+      visibility: validated.visibility,
+      viewers: parseEmails(viewersRaw),
+    });
   }
-
-  const site = await createSiteRecord({
-    email,
-    slug: slugRes.slug,
-    s3Prefix: pending.s3_prefix,
-    indexName: idx.indexName,
-    totalBytes,
-    pageCount: usable.length,
-    ttl: validated.ttl,
-    workspaceId: validated.workspaceId,
-    visibility: validated.visibility,
-    viewers: parseEmails(viewersRaw),
-  });
   await query("UPDATE pending_uploads SET completed_at = now() WHERE id = $1", [
     uploadId,
   ]);
@@ -142,6 +164,8 @@ export async function POST(req: Request) {
     slug: site.slug,
     url: `${base}/s/${site.slug}`,
     pages: usable.length,
+    version,
+    republished: Boolean(slugRes.existing),
     expiresAt: new Date(site.expires_at).toISOString(),
   });
 }

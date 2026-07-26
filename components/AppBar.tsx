@@ -1,12 +1,21 @@
 import Link from "next/link";
-import { ShieldCheck, LayoutGrid, Settings, HardDrive, Users } from "lucide-react";
+import {
+  ShieldCheck,
+  LayoutGrid,
+  Settings,
+  HardDrive,
+  Users,
+  Trash2,
+  Terminal,
+} from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { SignOutButton } from "@/components/AuthButtons";
+import { NotificationsBell } from "@/components/NotificationsBell";
 
 export interface AppBarProps {
   email: string;
   name?: string | null;
-  active: "sites" | "teams" | "settings";
+  active: "sites" | "teams" | "trash" | "api" | "settings";
   usedBytes: number;
   siteCount: number;
   siteLimit: number;
@@ -94,11 +103,14 @@ export function AppBar({
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           {navItem("/dashboard", "Sites", <LayoutGrid size={14} />, active === "sites")}
           {navItem("/teams", "Teams", <Users size={14} />, active === "teams")}
+          {navItem("/trash", "Trash", <Trash2 size={14} />, active === "trash")}
+          {navItem("/api-cli", "API", <Terminal size={14} />, active === "api")}
           {navItem("/settings", "Settings", <Settings size={14} />, active === "settings")}
         </div>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <NotificationsBell />
         <span
           style={{
             display: "inline-flex",

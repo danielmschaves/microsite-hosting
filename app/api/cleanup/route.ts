@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { query, type SiteRow } from "@/lib/db";
 import { deletePrefix } from "@/lib/storage";
+import { purgeSiteStorage } from "@/lib/createSite";
+import { sendEmail, expiryEmail } from "@/lib/email";
 import { track } from "@/lib/events";
 import { TRASH_DAYS } from "@/lib/plan";
 
@@ -20,6 +22,43 @@ async function runCleanup(req: Request) {
   const authHeader = req.headers.get("authorization") || "";
   if (!secret || authHeader !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Phase 0 — expiry notices (T-48h / T-2h). Marker columns make this
+  // idempotent at any cron cadence: a daily cron still sends the 48h notice
+  // (possibly late) and simply misses most 2h windows. The marker is set
+  // even when email is unconfigured — the in-app bell covers the user and
+  // a misconfigured key must not retry-storm.
+  const base = process.env.NEXT_PUBLIC_BASE_URL || process.env.NEXTAUTH_URL || "";
+  let notices = 0;
+  for (const window of ["48h", "2h"] as const) {
+    const col = window === "48h" ? "notified_48h_at" : "notified_2h_at";
+    const hours = window === "48h" ? 48 : 2;
+    const due = await query<SiteRow>(
+      `SELECT * FROM sites
+        WHERE deleted_at IS NULL
+          AND expires_at > now()
+          AND expires_at <= now() + make_interval(hours => $1)
+          AND ${col} IS NULL`,
+      [hours],
+    );
+    for (const site of due) {
+      const msg = expiryEmail({
+        slug: site.slug,
+        window,
+        expiresAt: new Date(site.expires_at),
+        siteUrl: `${base}/s/${site.slug}`,
+        manageUrl: `${base}/sites/${site.id}`,
+      });
+      await sendEmail({ to: site.owner_email, ...msg });
+      await query(`UPDATE sites SET ${col} = now() WHERE id = $1`, [site.id]);
+      await track("expiry_notice_sent", {
+        siteId: site.id,
+        workspaceId: site.workspace_id ?? undefined,
+        meta: { window },
+      });
+      notices++;
+    }
   }
 
   // Phase 1 — move newly expired sites to trash.
@@ -44,7 +83,7 @@ async function runCleanup(req: Request) {
   const purgeResults: { slug: string; ok: boolean }[] = [];
   for (const site of purgeable) {
     try {
-      await deletePrefix(site.s3_prefix);
+      await purgeSiteStorage(site);
       await query("UPDATE sites SET purged_at = now() WHERE id = $1", [site.id]);
       await track("site_purged", { siteId: site.id, meta: { by: "cron" } });
       purgeResults.push({ slug: site.slug, ok: true });
@@ -75,6 +114,7 @@ async function runCleanup(req: Request) {
   );
 
   return NextResponse.json({
+    notices,
     trashed: trashed.length,
     purged: purgeResults.filter((r) => r.ok).length,
     orphansCleaned,

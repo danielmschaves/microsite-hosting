@@ -1,8 +1,12 @@
-# Shipsite MVP
+# Shipsite (MicroBuild)
 
-Ephemeral, SSO-gated HTML hosting. An authenticated user uploads a single
-self-contained `.html` file, gets a private link served only to logged-in
-allowed viewers, and the site auto-deletes when its TTL expires.
+Ephemeral, SSO-gated HTML hosting. Upload one or more self-contained `.html`
+pages, get a private link served only to allowed viewers (or, when you flip
+the toggle, anyone with the link), and let the site expire on its TTL —
+trash for 7 days, then gone. v1.0 adds team workspaces (roles, invites,
+audit log, Stripe billing), versioning with instant rollback, expiry
+notifications (email + in-app bell), a token-authenticated REST API, and
+dedicated trash/plans/API pages.
 
 See [`PRD.md`](./PRD.md) for the product spec, [`CLAUDE.md`](./CLAUDE.md) for
 architecture notes, and [`DEPLOY.md`](./DEPLOY.md) for the production deploy
@@ -61,15 +65,37 @@ npm install
 npm run dev
 ```
 
-## Endpoints
+## Key surfaces
 
 | Route | Purpose |
 |---|---|
-| `POST /api/upload` | Upload an HTML file (auth required). Fields: `file`, `ttl` (`24h`/`7d`/`30d`), optional `slug`, optional `viewers` |
-| `GET /s/{slug}` | Auth-gated content serving. Owner or allowlisted email only |
-| `DELETE /api/sites/{id}` | Owner deletes a site |
-| `GET,POST /api/cleanup` | TTL sweep. Requires `Authorization: Bearer $CRON_SECRET` |
-| `/dashboard` | List sites, copy link, delete, TTL countdown |
+| `/dashboard` | Your sites: grid/list, countdowns, extend/trash, team-shared sites |
+| `/sites/{id}` | Site detail: pages + set-as-index, versions + rollback, visibility (incl. public toggle), lifecycle, danger zone |
+| `/teams`, `/teams/{id}` | Workspaces: stat tiles, all-team-sites table, members, audit log (CSV export), billing, max-TTL policy |
+| `/trash` | Restore or purge trashed sites ("purges in Nd") |
+| `/plans` | Free / Team / Business pricing |
+| `/api-cli` | Access tokens + REST endpoint reference |
+| `GET /s/{slug}[/page.html]` | Content serving — login-walled unless the site is public |
+| `POST /api/upload` | Session multipart upload (≤4 MB; browser presigned path has no cap). Re-uploading your own slug publishes a new version |
+| `GET,POST /api/cleanup` | Notify (T-48h/T-2h) + trash + purge sweep. `Authorization: Bearer $CRON_SECRET` |
+
+## REST API (tokens)
+
+Create a token on `/api-cli`, then:
+
+```bash
+curl -X POST -H "Authorization: Bearer $MICROBUILD_TOKEN" \
+  -F file=@report.html -F ttl=7d -F slug=my-report \
+  http://localhost:3000/api/v1/sites
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/v1/sites` | List your live sites |
+| `POST /api/v1/sites` | Create (or republish your own slug) |
+| `PUT /api/v1/sites/{slug}/content` | Upload a new version |
+| `PATCH /api/v1/sites/{slug}` | `{ttl}` / `{visibility}` / `{slug}` |
+| `DELETE /api/v1/sites/{slug}` | Trash (`?permanent=true` purges) |
 
 ### Triggering cleanup manually
 
@@ -77,8 +103,9 @@ npm run dev
 curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cleanup
 ```
 
-On Vercel, `vercel.json` schedules this hourly and sends the `CRON_SECRET`
-bearer automatically.
+On Vercel, `vercel.json` schedules this daily (Hobby-tier limit) and sends the
+`CRON_SECRET` bearer automatically; point an external 15-minute cron at the
+same URL for timely T-2h expiry notices (see `DEPLOY.md`).
 
 ## Configuration
 

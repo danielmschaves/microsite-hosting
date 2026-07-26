@@ -22,7 +22,13 @@ export type EventType =
   | "ttl_policy_changed"
   | "visibility_changed"
   | "site_force_expired"
-  | "subscription_updated";
+  | "subscription_updated"
+  | "site_version_published"
+  | "site_rolled_back"
+  | "index_changed"
+  | "api_token_created"
+  | "api_token_revoked"
+  | "expiry_notice_sent";
 
 export async function track(
   type: EventType,

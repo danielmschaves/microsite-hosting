@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-Pre-implementation phase. The full specification is in `PRD.md`. No source code exists yet — the next step is building the MVP described in PRD §8.
+Built and deployed: the MVP (PRD §8) plus the v1.0 feature set (teams/workspaces, billing, multi-page sites, presigned uploads, trash, versioning, token API, public links, expiry notifications). The full specification is in `PRD.md`; the sections below describe what exists in the codebase.
 
 ## Build Goal (PRD §8.5)
 
@@ -22,7 +22,7 @@ Pre-implementation phase. The full specification is in `PRD.md`. No source code 
 | Content serving | Authenticated Next.js route handler at `/s/[slug]/[...path]` streaming from S3 |
 | Local dev | `docker compose up` — app + Postgres + MinIO |
 
-## Expected Commands (once scaffolded)
+## Commands
 
 ```bash
 docker compose up          # Full local stack: app + Postgres + MinIO
@@ -38,7 +38,7 @@ npm test                   # Test suite
 
 **Storage adapter pattern:** Abstract S3 operations behind a storage adapter so the backing store (Vercel Blob / AWS S3 / MinIO) is swappable via env var. This is the migration path to v1.0.
 
-**Auth-gated content serving:** All sites are private by default. The route handler at `/s/[slug]/[...path]` must verify Auth.js session and check the viewer allowlist in Postgres *before* streaming any bytes from S3 — never expose S3 URLs directly.
+**Auth-gated content serving:** All sites are private by default. The route handler at `/s/[slug]/[...path]` must verify the Auth.js session and check `canViewSite` in Postgres *before* streaming any bytes from S3 — never expose S3 URLs directly. The one exception is `visibility='public'` ("anyone with the link", owner-toggled with a warning): anonymous requests serve with `X-Robots-Tag: noindex`; everything else still hits the login wall.
 
 **No Vercel-specific primitives in core logic:** Cron trigger, storage calls, and auth callbacks must be reachable from either a Vercel deployment or a plain Docker container. Use standard Next.js API routes, not Vercel-specific SDK features.
 
@@ -51,17 +51,24 @@ Pages (App Router):
 - `/upload` — "Publish a page": dropzone + config (slug, TTL, viewer allowlist chips) + summary panel
 - `/settings` — profile + configured sign-in providers + sign out
 
-- `/sites/[id]` — owner-only manage panel: stats, TTL, slug rename, visibility, viewer allowlist CRUD, pages list, trash/restore/purge
-- `/teams`, `/teams/[id]` — workspaces: members/roles/invites, usage, sites table (admin force-expire/trash), audit log (team plan), billing card, max-TTL policy
+- `/sites/[id]` — owner-only manage panel (two-column, per the design's Site Detail screen): stats, pages list + set-as-index, versions + rollback, who-can-view (only_me/allowlist/team radios + public toggle), lifecycle/TTL, slug rename, danger zone (force-expire, trash/restore/purge)
+- `/teams`, `/teams/[id]` — workspaces (Team Admin screen): stat tiles, all-team-sites table (admin force-expire/trash), members ∥ audit log (CSV export, team plan), invites, billing card, max-TTL policy
+- `/trash` — personal trash + admin view of workspace trash; restore (owner) / purge, "purges in Nd" countdowns
+- `/plans` — Free/Team/Business pricing cards driven by `lib/plan.ts` constants; renders for anonymous and signed-in users
+- `/api-cli` — API & CLI page: curl example, access-token manager (secret shown once), REST endpoint reference
 - `/invite/[token]` — invite acceptance (email-bound, 14d expiry)
 
 API / handlers:
-- `/s/[slug]/[[...path]]` — auth-gated content serving (verify session + allowlist, then stream from S3); records a `site_view` event
-- `/api/upload` — POST: accepts 1–20 `.html` files (multi-page; `index` field or auto-detected `index.html`), stores under a slug-decoupled S3 prefix (`sites/{slug}-{ts}/`), writes metadata to Postgres
-- `/api/sites/[id]` — DELETE (move to trash; `?permanent=true` purges storage) · PATCH (`{ttl}` extend, `{slug}` rename — metadata-only, prefix never moves, `{action:"restore"}` un-trash)
+- `/s/[slug]/[[...path]]` — content serving: site lookup first, then session gate (skipped only for `public`), then `canViewSite`, then stream from S3; records a `site_view` event (actor NULL for anonymous)
+- `/api/upload` — POST: accepts 1–20 `.html` files (multi-page; `index` field or auto-detected `index.html`), stores under a slug-decoupled S3 prefix (`sites/{slug}-{ts}/`); re-uploading your own live slug publishes a **new version** at the same URL (anyone else's slug is still 409). Thin wrapper over `lib/uploadService.ts` `performServerUpload`
+- `/api/sites/[id]` — DELETE (move to trash; `?permanent=true` purges storage incl. all version prefixes) · PATCH (`{ttl}` extend, `{slug}` rename — metadata-only, prefix never moves, `{visibility}`, `{index}` set-as-index, `{action:"restore"|"force_expire"}`); ttl/slug/visibility live in `lib/siteMutations.ts`, shared with the v1 API
+- `/api/sites/[id]/versions/rollback` — POST `{version}`: instant metadata pointer flip to a retained version
 - `/api/sites/[id]/viewers` — GET/POST/DELETE: allowlist CRUD, effective immediately
-- `/api/cleanup` — GET/POST, `Authorization: Bearer $CRON_SECRET`: phase 1 trashes expired sites (storage kept); phase 2 purges storage for sites trashed > 7 days; phase 3 purges incomplete presigned uploads > 24h
-- `/api/upload/presign` + `/api/upload/complete` — presigned browser→S3 path (no server body cap); `/api/upload` is the ≤4MB multipart fallback; both share `lib/createSite.ts`
+- `/api/cleanup` — GET/POST, `Authorization: Bearer $CRON_SECRET`: phase 0 sends T-48h/T-2h expiry emails (marker columns keep any cadence idempotent); phase 1 trashes expired sites (storage kept); phase 2 purges storage for sites trashed > 7 days via `purgeSiteStorage`; phase 3 purges incomplete presigned uploads > 24h
+- `/api/notifications` — GET: caller's live sites expiring <48h (feeds the AppBar bell; no read-state)
+- `/api/tokens` (+`/[id]`) — session-only API-token CRUD (`lib/apiTokens.ts`; sha256 hash stored, secret returned exactly once)
+- `/api/v1/sites[...]` — Bearer-token REST API (owner-scoped): GET list, POST create/republish (multipart ≤4MB), PUT `{slug}/content` new version, PATCH ttl/visibility/slug, DELETE trash/`?permanent=true`
+- `/api/upload/presign` + `/api/upload/complete` — presigned browser→S3 path (no server body cap); `/api/upload` is the ≤4MB multipart fallback; both share `lib/createSite.ts` and support re-publish (update mode)
 - `/api/workspaces[...]` — workspace CRUD, members (owner immovable), invites (admin+), audit (admin+, team plan), billing checkout/portal (owner)
 - `/api/invites/[token]` — POST accept (session email must equal invited email)
 - `/api/stripe/webhook` — signature-verified; `lib/billing.ts` `syncSubscriptionToWorkspace` is the SOLE writer of plan/seats/status
@@ -83,7 +90,9 @@ Ported from the "MicroBuild" Claude Design project. Do not hand-edit tokens ad h
 
 ## Data Model (core tables)
 
-- `sites` — slug, owner_email, s3_prefix, index_key, size_bytes, page_count, ttl_preset, expires_at, deleted_at (= in trash), purged_at (= storage gone, unrestorable)
+- `sites` — slug, owner_email, s3_prefix, index_key, size_bytes, page_count, ttl_preset, expires_at, deleted_at (= in trash), purged_at (= storage gone, unrestorable), visibility (`only_me|allowlist|team|public`), current_version, notified_48h_at/notified_2h_at (expiry-notice markers, cleared on extend/restore/republish)
+- `site_versions` — per-publish history (site_id, version, s3_prefix, index_key, sizes). The `sites` row is the live pointer; each version keeps its own S3 prefix, so rollback is a pointer flip and pruning (plan `versionLimit`: free 1 / team 5) never touches the live prefix. All storage deletion goes through `purgeSiteStorage` in `lib/createSite.ts`
+- `api_tokens` — owner_email, name, token_hash (sha256, unique), token_prefix, last_used_at, revoked_at
 - `site_viewers` — site_id, viewer_email (the allowlist)
 - `events` — first-party analytics (type, site_id, actor, meta jsonb); captured server-side via `lib/events.ts` `track()`; no third-party SDK
 
@@ -91,13 +100,13 @@ Lifecycle: live (`deleted_at IS NULL`, unexpired) → trash (`deleted_at` set, s
 
 Auth uses JWT sessions (no DB adapter), so there is no `users` table — the allowlist is matched against the session email.
 
-## MVP Scope
+## Scope
 
-**In:** single `.html` upload, login-required viewing (Google/GitHub), email allowlist per site, TTL presets (24h/7d/30d), hard delete via cron, minimal dashboard.
+**Shipped (MVP + v1.0):** multi-page `.html` upload (multipart + presigned), login-walled viewing (Google/GitHub), per-site allowlists, public link mode, TTL presets + notifications (T-48h/T-2h email + bell), trash/restore/purge via cron, versioning + rollback, teams/workspaces with roles/invites/audit/billing (Stripe), max-TTL policy, token REST API, dashboard/trash/plans/api-cli pages.
 
-**Out (deferred to v1.0):** teams/workspaces, admin views, audit log, billing, multi-page sites, versioning, expiry notifications, API/CLI, custom SSO, subdomain-per-site.
+**Still out (v1.1+):** dedicated CLI package (`@microbuild/cli` — the API exists), custom SSO (SAML/OIDC, M3), subdomain-per-site, rate limiting on the v1 API, anonymous-view event retention sweep.
 
-## Environment Variables (all required)
+## Environment Variables (core ones required; see DEPLOY.md for optional Resend/Stripe/presign vars)
 
 ```
 # Auth.js
