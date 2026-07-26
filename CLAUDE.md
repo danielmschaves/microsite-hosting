@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-Pre-implementation phase. The full specification is in `PRD.md`. No source code exists yet — the next step is building the MVP described in PRD §8.
+Built and deployed: the MVP (PRD §8) plus the v1.0 feature set (teams/workspaces, billing, multi-page sites, presigned uploads, trash, versioning, token API, public links, expiry notifications). The full specification is in `PRD.md`; the sections below describe what exists in the codebase.
 
 ## Build Goal (PRD §8.5)
 
@@ -22,7 +22,7 @@ Pre-implementation phase. The full specification is in `PRD.md`. No source code 
 | Content serving | Authenticated Next.js route handler at `/s/[slug]/[...path]` streaming from S3 |
 | Local dev | `docker compose up` — app + Postgres + MinIO |
 
-## Expected Commands (once scaffolded)
+## Commands
 
 ```bash
 docker compose up          # Full local stack: app + Postgres + MinIO
