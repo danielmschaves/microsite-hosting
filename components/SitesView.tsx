@@ -22,7 +22,6 @@ import {
   Eye,
   FileCode2,
   Settings2,
-  ArchiveRestore,
   AlertTriangle,
   SlidersHorizontal,
 } from "lucide-react";
@@ -311,7 +310,26 @@ export function SitesView({
       )}
 
       {trash.length > 0 && (
-        <TrashSection trash={trash} nowMs={nowMs} onChanged={() => router.refresh()} />
+        <Link
+          href="/trash"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 9,
+            marginTop: 34,
+            padding: "12px 16px",
+            borderRadius: "var(--r-md)",
+            background: "var(--surface-1)",
+            border: "1px solid var(--border)",
+            font: "600 12.5px/1 var(--font-ui)",
+            color: "var(--text-muted)",
+          }}
+        >
+          <Trash2 size={14} style={{ color: "var(--text-subtle)" }} />
+          {trash.length} site{trash.length > 1 ? "s" : ""} in trash — recoverable for 7
+          days
+          <span style={{ marginLeft: "auto", color: "var(--accent)" }}>Open trash →</span>
+        </Link>
       )}
 
       {toast && <Toast title={toast.title} detail={toast.detail} tone={toast.tone} />}
@@ -834,115 +852,6 @@ function TeamSitesSection({
               </span>
               <button onClick={() => onCopy(t.url)} className="icon-btn" aria-label="Copy link" style={{ width: 32, height: 32, background: "transparent" }}>
                 <Copy size={14} />
-              </button>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function TrashSection({
-  trash,
-  nowMs,
-  onChanged,
-}: {
-  trash: TrashView[];
-  nowMs: number;
-  onChanged: () => void;
-}) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  async function restore(t: TrashView) {
-    setBusy(t.id);
-    setErr(null);
-    try {
-      const res = await fetch(`/api/sites/${t.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "restore" }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) setErr(data.error || "Restore failed.");
-      else onChanged();
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function purge(t: TrashView) {
-    if (!confirm(`Permanently delete "${t.slug}"? This cannot be undone.`)) return;
-    setBusy(t.id);
-    setErr(null);
-    try {
-      const res = await fetch(`/api/sites/${t.id}?permanent=true`, { method: "DELETE" });
-      if (!res.ok) setErr("Delete failed.");
-      else onChanged();
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  return (
-    <div style={{ marginTop: 34 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-        <Trash2 size={15} style={{ color: "var(--text-subtle)" }} />
-        <h2 style={{ margin: 0, font: "700 15px/1 var(--font-ui)", color: "var(--text-muted)" }}>
-          Trash ({trash.length})
-        </h2>
-      </div>
-      {err && (
-        <div style={{ marginBottom: 12, padding: "9px 12px", borderRadius: "var(--r-md)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)", color: "var(--text)", font: "500 12.5px/1.4 var(--font-ui)" }}>
-          {err}
-        </div>
-      )}
-      <div className="card" style={{ overflow: "hidden", opacity: 0.9 }}>
-        {trash.map((t, i) => {
-          const daysLeft = Math.max(
-            0,
-            Math.ceil((new Date(t.purgeAt).getTime() - nowMs) / (24 * 3600 * 1000)),
-          );
-          return (
-            <div
-              key={t.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 14,
-                padding: "12px 16px",
-                borderTop: i === 0 ? "none" : "1px solid var(--border)",
-              }}
-            >
-              <div
-                style={{
-                  width: 52,
-                  height: 38,
-                  borderRadius: 8,
-                  flex: "none",
-                  backgroundImage:
-                    "repeating-linear-gradient(135deg, var(--surface-3) 0 6px, var(--surface-2) 6px 12px)",
-                  border: "1px solid var(--border)",
-                  opacity: 0.5,
-                  filter: "grayscale(.6)",
-                }}
-              />
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ font: "700 13.5px/1.1 var(--font-ui)", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {t.slug}
-                </div>
-                <div className="mb-mono" style={{ font: "500 11px/1 var(--font-mono)", color: "var(--text-subtle)", marginTop: 4 }}>
-                  {sizeLabel(t.sizeBytes)} · permanently deleted in {daysLeft}d
-                </div>
-              </div>
-              <button onClick={() => restore(t)} disabled={busy !== null} className="btn btn-neutral" style={{ padding: "8px 13px", font: "600 12.5px/1 var(--font-ui)" }}>
-                <ArchiveRestore size={14} />
-                {busy === t.id ? "Working…" : "Restore"}
-              </button>
-              <button onClick={() => purge(t)} disabled={busy !== null} className="btn btn-danger" style={{ padding: "8px 13px", font: "600 12.5px/1 var(--font-ui)" }}>
-                <Trash2 size={14} />
-                Delete forever
               </button>
             </div>
           );

@@ -6,10 +6,15 @@ import { getMembership, roleAtLeast } from "./teams";
 // Central authorization for sites. Every access decision lives here — the
 // serving route, the manage APIs, and the pages all call these two functions.
 
-export type Visibility = "only_me" | "allowlist" | "team";
+export type Visibility = "only_me" | "allowlist" | "team" | "public";
 
 export function isVisibility(value: string): value is Visibility {
-  return value === "only_me" || value === "allowlist" || value === "team";
+  return (
+    value === "only_me" ||
+    value === "allowlist" ||
+    value === "team" ||
+    value === "public"
+  );
 }
 
 /**
@@ -18,6 +23,7 @@ export function isVisibility(value: string): value is Visibility {
  * - only_me: owner only
  * - allowlist: owner + site_viewers entries
  * - team: owner + any member of the site's workspace
+ * - public: anyone (the serving route also skips the login wall)
  */
 export async function canViewSite(
   site: SiteRow,
@@ -29,6 +35,8 @@ export async function canViewSite(
   switch (site.visibility) {
     case "only_me":
       return false;
+    case "public":
+      return true;
     case "team": {
       if (!site.workspace_id) return false;
       return (await getMembership(lower, site.workspace_id)) !== null;

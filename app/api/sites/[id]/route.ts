@@ -124,7 +124,7 @@ export async function PATCH(
     const visibility = body.visibility;
     if (!isVisibility(visibility)) {
       return NextResponse.json(
-        { error: "visibility must be only_me, allowlist or team" },
+        { error: "visibility must be only_me, allowlist, team or public" },
         { status: 400 },
       );
     }
