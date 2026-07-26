@@ -1,22 +1,13 @@
 import { NextResponse } from "next/server";
-import { query, type WorkspaceRow } from "@/lib/db";
+import { query } from "@/lib/db";
 import { listPrefix } from "@/lib/storage";
-import { expiresAtFrom, isTtlPreset } from "@/lib/ttl";
-import { normalizeSlug } from "@/lib/slug";
-import { authorizeSiteManage, isVisibility } from "@/lib/authz";
-import { planForWorkspace, allowedTtlPresets } from "@/lib/plan";
+import { expiresAtFrom } from "@/lib/ttl";
+import { authorizeSiteManage } from "@/lib/authz";
 import { purgeSiteStorage } from "@/lib/createSite";
+import { changeVisibility, renameSlug, extendTtl } from "@/lib/siteMutations";
 import { track } from "@/lib/events";
 
 export const runtime = "nodejs";
-
-async function workspaceFor(workspaceId: string | null): Promise<WorkspaceRow | null> {
-  if (!workspaceId) return null;
-  const rows = await query<WorkspaceRow>("SELECT * FROM workspaces WHERE id = $1", [
-    workspaceId,
-  ]);
-  return rows[0] ?? null;
-}
 
 // DELETE — move to trash (default) or purge permanently (?permanent=true).
 // Owner always; workspace admins may trash/purge team-workspace sites.
@@ -105,11 +96,16 @@ export async function PATCH(
     const expired = new Date(site.expires_at).getTime() <= Date.now();
     if (expired) {
       await query(
-        "UPDATE sites SET deleted_at = NULL, ttl_preset = '7d', expires_at = $1 WHERE id = $2",
+        `UPDATE sites SET deleted_at = NULL, ttl_preset = '7d', expires_at = $1,
+                notified_48h_at = NULL, notified_2h_at = NULL
+          WHERE id = $2`,
         [expiresAtFrom("7d"), id],
       );
     } else {
-      await query("UPDATE sites SET deleted_at = NULL WHERE id = $1", [id]);
+      await query(
+        "UPDATE sites SET deleted_at = NULL, notified_48h_at = NULL, notified_2h_at = NULL WHERE id = $1",
+        [id],
+      );
     }
     await track("site_restored", {
       siteId: id,
@@ -121,39 +117,8 @@ export async function PATCH(
 
   // --- visibility ----------------------------------------------------------
   if (typeof body?.visibility === "string") {
-    const visibility = body.visibility;
-    if (!isVisibility(visibility)) {
-      return NextResponse.json(
-        { error: "visibility must be only_me, allowlist, team or public" },
-        { status: 400 },
-      );
-    }
-    if (visibility === "team" && !site.workspace_id) {
-      return NextResponse.json(
-        { error: "Team visibility requires the site to belong to a workspace" },
-        { status: 400 },
-      );
-    }
-    if (visibility === "team") {
-      const ws = await workspaceFor(site.workspace_id);
-      if (planForWorkspace(ws).id !== "team") {
-        return NextResponse.json(
-          {
-            error: "Team visibility requires the Team plan",
-            upgradeUrl: `/teams/${site.workspace_id}`,
-          },
-          { status: 402 },
-        );
-      }
-    }
-    await query("UPDATE sites SET visibility = $1 WHERE id = $2", [visibility, id]);
-    await track("visibility_changed", {
-      siteId: id,
-      workspaceId: site.workspace_id ?? undefined,
-      actor: email,
-      meta: { from: site.visibility, to: visibility },
-    });
-    return NextResponse.json({ ok: true, visibility });
+    const result = await changeVisibility(site, email, body.visibility);
+    return NextResponse.json(result.body, { status: result.status });
   }
 
   // --- set index page --------------------------------------------------------
@@ -180,68 +145,18 @@ export async function PATCH(
   }
 
   // --- rename slug ---------------------------------------------------------
-  // The S3 prefix is stored per-site and never derived from the slug, so a
-  // rename is metadata-only: no object moves, old links simply stop resolving.
   if (typeof body?.slug === "string") {
-    const slug = normalizeSlug(body.slug);
-    if (!slug) {
-      return NextResponse.json(
-        { error: "Invalid slug (use 3-63 lowercase letters, numbers, dashes)" },
-        { status: 400 },
-      );
-    }
-    if (slug !== site.slug) {
-      const taken = await query(
-        "SELECT 1 FROM sites WHERE slug = $1 AND deleted_at IS NULL AND id <> $2",
-        [slug, id],
-      );
-      if (taken.length > 0) {
-        return NextResponse.json({ error: "Slug already taken" }, { status: 409 });
-      }
-      await query("UPDATE sites SET slug = $1 WHERE id = $2", [slug, id]);
-      await track("slug_renamed", {
-        siteId: id,
-        workspaceId: site.workspace_id ?? undefined,
-        actor: email,
-        meta: { from: site.slug, to: slug },
-      });
-    }
-    return NextResponse.json({ ok: true, slug });
+    const result = await renameSlug(site, email, body.slug);
+    return NextResponse.json(result.body, { status: result.status });
   }
 
   // --- extend TTL ----------------------------------------------------------
-  const ttl = String(body?.ttl || "");
-  if (!isTtlPreset(ttl)) {
+  if (typeof body?.ttl !== "string" || !body.ttl) {
     return NextResponse.json(
-      { error: "Provide { ttl }, { slug }, { visibility } or { action }" },
+      { error: "Provide { ttl }, { slug }, { visibility }, { index } or { action }" },
       { status: 400 },
     );
   }
-  {
-    const ws = await workspaceFor(site.workspace_id);
-    const plan = planForWorkspace(ws);
-    const allowed = allowedTtlPresets(plan, ws?.max_ttl_preset ?? null);
-    if (!allowed.includes(ttl)) {
-      return NextResponse.json(
-        {
-          error: `ttl must be one of ${allowed.join(", ")} on this plan`,
-          ...(plan.id === "free" ? { upgradeUrl: site.workspace_id ? `/teams/${site.workspace_id}` : "/teams" } : {}),
-        },
-        { status: 402 },
-      );
-    }
-  }
-  const expiresAt = expiresAtFrom(ttl);
-  await query("UPDATE sites SET ttl_preset = $1, expires_at = $2 WHERE id = $3", [
-    ttl,
-    expiresAt,
-    id,
-  ]);
-  await track("ttl_extended", {
-    siteId: id,
-    workspaceId: site.workspace_id ?? undefined,
-    actor: email,
-    meta: { ttl },
-  });
-  return NextResponse.json({ ok: true, expiresAt: expiresAt.toISOString() });
+  const result = await extendTtl(site, email, body.ttl);
+  return NextResponse.json(result.body, { status: result.status });
 }
