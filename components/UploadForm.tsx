@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   UploadCloud,
+  History,
   FileCode2,
   X,
   Wand2,
@@ -43,9 +44,12 @@ export interface UploadWorkspace {
 export function UploadForm({
   workspaces = [],
   personalTtls = ["24h", "7d", "30d"],
+  editSlug = null,
 }: {
   workspaces?: UploadWorkspace[];
   personalTtls?: string[];
+  /** Set when arriving via an Edit button: publish a new version of this owned slug. */
+  editSlug?: string | null;
 }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -54,7 +58,7 @@ export function UploadForm({
   const [files, setFiles] = useState<File[]>([]);
   const [indexName, setIndexName] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [slug, setSlug] = useState("");
+  const [slug, setSlug] = useState(editSlug ?? "");
   const [ttl, setTtl] = useState<string>("7d");
   const [dest, setDest] = useState(""); // "" = personal, else workspace id
   const [visibility, setVisibility] = useState<"only_me" | "allowlist" | "team">("allowlist");
@@ -309,6 +313,11 @@ export function UploadForm({
     if (inputRef.current) inputRef.current.value = "";
   }
 
+  // Edit mode: publishing a new version of an owned slug. The server pins
+  // destination/visibility/viewers to the site's current settings, so those
+  // controls are hidden to match.
+  const isEditing = editSlug !== null && slug.trim() === editSlug;
+
   const viewerLabel =
     visibility === "team"
       ? "Whole team"
@@ -328,8 +337,35 @@ export function UploadForm({
         </Link>
       </div>
       <h1 style={{ margin: "0 0 26px", font: "800 26px/1 var(--font-ui)", letterSpacing: "-.02em", color: "var(--text)" }}>
-        Publish a page
+        {isEditing ? "Publish a new version" : "Publish a page"}
       </h1>
+
+      {isEditing && !published && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            marginBottom: 18,
+            padding: "12px 15px",
+            borderRadius: "var(--r-md)",
+            background: "var(--accent-soft)",
+            border: "1px solid var(--accent-border)",
+            font: "500 12.5px/1.4 var(--font-ui)",
+            color: "var(--text)",
+          }}
+        >
+          <History size={15} style={{ color: "var(--accent)", flex: "none" }} />
+          <span style={{ flex: 1 }}>
+            You&apos;re updating{" "}
+            <span className="mb-mono" style={{ font: "600 12px/1 var(--font-mono)" }}>
+              /s/{editSlug}
+            </span>{" "}
+            — same URL, viewers and visibility unchanged. The current content is kept as
+            a previous version.
+          </span>
+        </div>
+      )}
 
       {published ? (
         <PublishedCard published={published} ttl={ttl} viewerLabel={viewerLabel} onReset={reset} />
@@ -523,7 +559,7 @@ export function UploadForm({
                 )}
               </div>
 
-              {workspaces.length > 0 && (
+              {workspaces.length > 0 && !isEditing && (
                 <div style={{ marginBottom: 18 }}>
                   <label className="lbl">Publish to</label>
                   <select
@@ -550,6 +586,7 @@ export function UploadForm({
                 </div>
               )}
 
+              {!isEditing && (
               <div style={{ marginBottom: 18 }}>
                 <label className="lbl">Who can view</label>
                 <div className="seg-group">
@@ -579,8 +616,9 @@ export function UploadForm({
                   </button>
                 </div>
               </div>
+              )}
 
-              {visibility === "allowlist" && (
+              {!isEditing && visibility === "allowlist" && (
               <div>
                 <label className="lbl">Allowed viewers</label>
                 <div className="focus-ring" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: 10, borderRadius: "var(--r-md)", background: "var(--surface-2)", border: "1px solid var(--border-strong)" }}>
@@ -629,9 +667,11 @@ export function UploadForm({
               <Rocket size={16} />
               {busy
                 ? "Publishing…"
-                : files.length > 1
-                  ? `Publish ${files.length}-page site`
-                  : "Publish private site"}
+                : isEditing
+                  ? "Publish new version"
+                  : files.length > 1
+                    ? `Publish ${files.length}-page site`
+                    : "Publish private site"}
             </button>
             {error && (
               <div style={{ marginTop: 12, padding: "9px 11px", borderRadius: "var(--r-md)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)", color: "var(--text)", font: "500 12px/1.4 var(--font-ui)" }}>
