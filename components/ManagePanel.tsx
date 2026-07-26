@@ -28,6 +28,7 @@ import {
   PowerOff,
   RotateCcw,
   Bell,
+  Upload,
 } from "lucide-react";
 import { Banner } from "@/components/ui";
 
@@ -375,6 +376,16 @@ export function ManagePanel({
             <Copy size={14} />
             {copied ? "Copied" : "Copy link"}
           </button>
+          {!site.trashed && (
+            <Link
+              href={`/upload?slug=${encodeURIComponent(site.slug)}`}
+              className="btn btn-neutral"
+              title="Upload new content at the same URL"
+            >
+              <Pencil size={14} />
+              Edit
+            </Link>
+          )}
           <button
             onClick={extendTtl}
             disabled={busy !== null || site.trashed}
@@ -540,16 +551,33 @@ export function ManagePanel({
                     : "Re-uploads keep the same URL and replace the content."}
                 </div>
               </div>
-              <span
-                className="mb-mono"
-                style={{
-                  font: "600 10.5px/1 var(--font-mono)",
-                  color: "var(--text-subtle)",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {Math.min(versions.length, versionLimit)} / {versionLimit} KEPT
-              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flex: "none" }}>
+                <span
+                  className="mb-mono"
+                  style={{
+                    font: "600 10.5px/1 var(--font-mono)",
+                    color: "var(--text-subtle)",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {Math.min(versions.length, versionLimit)} / {versionLimit} KEPT
+                </span>
+                {!site.trashed && (
+                  <Link
+                    href={`/upload?slug=${encodeURIComponent(site.slug)}`}
+                    className="btn btn-ghost"
+                    style={{
+                      padding: "6px 10px",
+                      font: "600 11.5px/1 var(--font-ui)",
+                      border: "1px solid var(--border-strong)",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    <Upload size={12} />
+                    New version
+                  </Link>
+                )}
+              </div>
             </div>
             {versions.length === 0 && (
               <div

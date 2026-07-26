@@ -14,10 +14,26 @@ import { UploadForm } from "@/components/UploadForm";
 
 export const dynamic = "force-dynamic";
 
-export default async function UploadPage() {
+export default async function UploadPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ slug?: string }>;
+}) {
   const session = await auth();
   const email = session?.user?.email;
   if (!email) redirect("/");
+
+  // /upload?slug=x — the "Edit" buttons land here; publishing to a slug you
+  // own creates a new version at the same URL.
+  const { slug: slugParam } = await searchParams;
+  let editSlug: string | null = null;
+  if (slugParam) {
+    const owned = await query(
+      "SELECT 1 FROM sites WHERE slug = $1 AND deleted_at IS NULL AND lower(owner_email) = $2",
+      [slugParam, email.toLowerCase()],
+    );
+    if (owned.length > 0) editSlug = slugParam;
+  }
 
   const rows = await query<{ size_bytes: string }>(
     "SELECT size_bytes FROM sites WHERE owner_email = $1 AND deleted_at IS NULL",
@@ -48,6 +64,7 @@ export default async function UploadPage() {
           };
         })}
         personalTtls={allowedTtlPresets(FREE_PLAN)}
+        editSlug={editSlug}
       />
     </>
   );

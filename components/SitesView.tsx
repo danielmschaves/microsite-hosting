@@ -22,6 +22,7 @@ import {
   Eye,
   FileCode2,
   Settings2,
+  Pencil,
   AlertTriangle,
   SlidersHorizontal,
 } from "lucide-react";
@@ -607,6 +608,14 @@ function SiteCard({
             <Copy size={13} />
             Copy link
           </button>
+          <Link
+            href={`/upload?slug=${encodeURIComponent(site.slug)}`}
+            className="icon-btn"
+            aria-label="Edit — upload a new version"
+            title="Edit — upload a new version"
+          >
+            <Pencil size={15} />
+          </Link>
           <Link href={`/sites/${site.id}`} className="icon-btn" aria-label="Manage site">
             <Settings2 size={15} />
           </Link>
@@ -690,6 +699,15 @@ function SiteRow({
         <button onClick={onCopy} className="icon-btn" aria-label="Copy link" style={{ width: 32, height: 32, background: "transparent" }}>
           <Copy size={14} />
         </button>
+        <Link
+          href={`/upload?slug=${encodeURIComponent(site.slug)}`}
+          className="icon-btn"
+          aria-label="Edit — upload a new version"
+          title="Edit — upload a new version"
+          style={{ width: 32, height: 32, background: "transparent" }}
+        >
+          <Pencil size={14} />
+        </Link>
         <Link href={`/sites/${site.id}`} className="icon-btn" aria-label="Manage" style={{ width: 32, height: 32, background: "transparent" }}>
           <Settings2 size={14} />
         </Link>
