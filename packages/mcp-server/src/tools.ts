@@ -351,6 +351,20 @@ export function registerTools(server: McpServer): void {
   );
 
   server.tool(
+    "get_site_insights",
+    "Visitor analytics for a site: total and unique views, views over time, top pages, referrers, and — unlike most hosts — the actual named viewers, since viewers here are authenticated. Anonymous public views only ever show up as counts, never a name. Requires the Team plan.",
+    { siteId: z.string(), days: z.number().int().min(1).max(90).optional() },
+    async ({ siteId, days }) => {
+      try {
+        const qs = days ? `?days=${days}` : "";
+        return text(await apiCall("GET", `/api/agent/sites/${siteId}/insights${qs}`));
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.tool(
     "claim_trial_site",
     "Claim an anonymous trial site (published via the /try no-signup flow) on behalf of the human this agent token was granted by — transfers ownership and extends the TTL to 7 days. Requires the raw guest token the browser session received.",
     { guestToken: z.string(), trialId: z.string().optional() },
