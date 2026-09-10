@@ -91,6 +91,7 @@ export interface SiteRow {
   notified_48h_at: Date | null;
   notified_2h_at: Date | null;
   production_deployment_id: string | null;
+  primary_host: string | null;
 }
 
 export interface SiteVersionRow {
@@ -247,6 +248,32 @@ export interface GuestSiteRow {
   expires_at: Date;
   claimed_by: string | null;
   claimed_at: Date | null;
+  created_at: Date;
+}
+
+// Agent Gateway (PRD v2.0, R3) ------------------------------------------------
+
+export type DomainStatus = "pending" | "verified" | "failed";
+export type CertStatus = "none" | "issuing" | "active" | "renewing" | "failed";
+
+export interface DnsRecord {
+  type: "CNAME" | "TXT" | "ALIAS/ANAME";
+  name: string;
+  value: string;
+  note?: string;
+}
+
+export interface SiteDomainRow {
+  id: string;
+  site_id: string;
+  hostname: string;
+  verification_token: string;
+  dns_records: DnsRecord[];
+  status: DomainStatus;
+  cert_status: CertStatus;
+  verified_at: Date | null;
+  is_primary: boolean;
+  created_by: string;
   created_at: Date;
 }
 
@@ -604,6 +631,41 @@ CREATE TABLE IF NOT EXISTS guest_sites (
 );
 CREATE INDEX IF NOT EXISTS guest_sites_token_idx ON guest_sites (guest_token_hash);
 CREATE INDEX IF NOT EXISTS guest_sites_unclaimed_idx ON guest_sites (expires_at) WHERE claimed_by IS NULL;
+
+-- Agent Gateway (PRD v2.0 R3): custom domains + host-based routing ----------
+-- primary_host is informational (which host is "the" address to show for
+-- this site — a verified custom domain once one exists) — it is never
+-- read for authorization or resolution; middleware.ts resolves purely from
+-- the incoming Host header against site_domains / the slug pattern, so a
+-- stale primary_host can never misroute or leak access.
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS primary_host TEXT;
+
+-- One row per custom hostname a site owner has pointed at their site.
+-- dns_records is a snapshot of the records add_custom_domain told the
+-- caller to create (CNAME for a subdomain, ALIAS/ANAME guidance for an
+-- apex, TXT for the ownership challenge) — kept so verify_custom_domain and
+-- the UI can show the exact same values without recomputing them
+-- (verification_token is random per domain, so recomputing could hand back
+-- different values than what the operator was actually told to create).
+-- cert_status is bookkeeping for CD-22 (certificate issuance) — this
+-- release only ever writes 'none'/'issuing'/'failed' via a stub; the real
+-- ACME flow lands in a later release and is explicitly not implemented yet.
+CREATE TABLE IF NOT EXISTS site_domains (
+  id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  site_id              UUID NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  hostname             TEXT NOT NULL UNIQUE,
+  verification_token   TEXT NOT NULL,
+  dns_records          JSONB NOT NULL DEFAULT '[]',
+  status               TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','verified','failed')),
+  cert_status          TEXT NOT NULL DEFAULT 'none'
+                         CHECK (cert_status IN ('none','issuing','active','renewing','failed')),
+  verified_at          TIMESTAMPTZ,
+  is_primary           BOOLEAN NOT NULL DEFAULT false,
+  created_by           TEXT NOT NULL,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS site_domains_site_idx ON site_domains (site_id);
+CREATE UNIQUE INDEX IF NOT EXISTS site_domains_primary_idx ON site_domains (site_id) WHERE is_primary;
 `;
 
 export async function migrate(): Promise<void> {

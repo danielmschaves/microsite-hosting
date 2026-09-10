@@ -51,10 +51,10 @@ team wants to share the association — MicroBuild doesn't require it to be comm
 
 ## Tool reference
 
-All 18 tools are documented via MCP tool descriptions (`list_projects`, `list_sites`,
+All 21 tools are documented via MCP tool descriptions (`list_projects`, `list_sites`,
 `get_site_context`, `create_site_from_html`, `apply_site_patch`, `create_preview`,
 `get_preview_status`, `delete_preview`, `set_preview_access`, `publish_site`, `list_site_versions`,
 `rollback_to_version`, `request_publish`, `get_approval_status`, `set_site_visibility`,
-`set_site_expiry`, `delete_site`, `claim_trial_site`) — read a tool's own description before
-calling it for parameter details; this file only covers workflow judgment calls the tool
-descriptions can't express on their own.
+`set_site_expiry`, `delete_site`, `claim_trial_site`, `list_site_domains`, `add_custom_domain`,
+`verify_custom_domain`) — read a tool's own description before calling it for parameter details;
+this file only covers workflow judgment calls the tool descriptions can't express on their own.
