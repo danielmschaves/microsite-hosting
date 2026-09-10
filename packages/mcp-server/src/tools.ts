@@ -310,6 +310,47 @@ export function registerTools(server: McpServer): void {
   );
 
   server.tool(
+    "list_site_domains",
+    "List a site's custom domains, their DNS records, verification status, and certificate state.",
+    { siteId: z.string() },
+    async ({ siteId }) => {
+      try {
+        return text(await apiCall("GET", `/api/agent/sites/${siteId}/domains`));
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.tool(
+    "add_custom_domain",
+    "Point a domain you own at this site. Returns the exact DNS records to create (a CNAME for a subdomain, ALIAS/ANAME guidance for an apex domain, plus a TXT ownership challenge) — nothing resolves until verify_custom_domain confirms them.",
+    { siteId: z.string(), hostname: z.string() },
+    async ({ siteId, hostname }) => {
+      try {
+        return text(await apiCall("POST", `/api/agent/sites/${siteId}/domains`, { body: { hostname } }));
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.tool(
+    "verify_custom_domain",
+    "Re-check DNS for a domain added with add_custom_domain. Idempotent — safe to call repeatedly while waiting for DNS to propagate.",
+    { siteId: z.string(), domainId: z.string() },
+    async ({ siteId, domainId }) => {
+      try {
+        return text(
+          await apiCall("POST", `/api/agent/sites/${siteId}/domains/${domainId}/verify`),
+        );
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.tool(
     "claim_trial_site",
     "Claim an anonymous trial site (published via the /try no-signup flow) on behalf of the human this agent token was granted by — transfers ownership and extends the TTL to 7 days. Requires the raw guest token the browser session received.",
     { guestToken: z.string(), trialId: z.string().optional() },

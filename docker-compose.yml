@@ -81,6 +81,11 @@ services:
       # sites.s3_prefix directly when true; self-healing to the legacy
       # columns on any inconsistency, so this is safe to flip locally.
       MICROBUILD_FLAG_DEPLOYMENT_SERVING: ${MICROBUILD_FLAG_DEPLOYMENT_SERVING:-false}
+      # PRD v2.0 R3 (CD-20): synthetic {slug}.<apex> / {deploymentId}.<previewApex>
+      # subdomains — unset by default (this compose stack doesn't own any
+      # domain), custom domains via site_domains work regardless.
+      MICROBUILD_APEX_DOMAIN: ${MICROBUILD_APEX_DOMAIN:-}
+      MICROBUILD_PREVIEW_APEX_DOMAIN: ${MICROBUILD_PREVIEW_APEX_DOMAIN:-}
     ports:
       - "3000:3000"
 

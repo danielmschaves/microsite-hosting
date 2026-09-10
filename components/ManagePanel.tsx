@@ -726,6 +726,20 @@ export function ManagePanel({
               </button>
             </div>
           </div>
+
+          {/* custom domains (PRD v2.0 CD-21) */}
+          <div className="card" style={{ padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <div>
+                <div style={cardTitle}>Custom domain</div>
+                <div style={cardSub}>Point your own domain at this site — CNAME + verification.</div>
+              </div>
+              <Link href={`/sites/${site.id}/domains`} className="btn btn-neutral">
+                <Globe size={14} />
+                Manage
+              </Link>
+            </div>
+          </div>
         </div>
 
         {/* ============================== right column */}

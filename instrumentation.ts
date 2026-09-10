@@ -8,9 +8,23 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
+  // PRD v2.0 CD-20 added middleware.ts, which makes Next also compile this
+  // file for the Edge runtime (middleware's own instrumentation hook target)
+  // — even though the `NEXT_RUNTIME !== "nodejs"` guard above makes the pg-
+  // touching code below unreachable at runtime on that build, a *literal*
+  // `import("./lib/db")` is still resolved by webpack while code-splitting,
+  // and pg's transitive deps (fs/path/stream) don't exist on Edge, hard-
+  // failing the build. Building the specifier from a variable makes it a
+  // fully dynamic (non-literal) import, which webpack can't statically
+  // resolve and so doesn't try to bundle — Node's real runtime resolves it
+  // fine regardless, since this line only ever executes in the Node.js
+  // instrumentation invocation anyway (see the early return above).
+  const dbModule = "./lib/db";
+  const storageModule = "./lib/storage";
+
   if (process.env.DATABASE_URL) {
     try {
-      const { migrate } = await import("./lib/db");
+      const { migrate } = await import(dbModule);
       await migrate();
       console.log("[startup] database schema ready");
     } catch (err) {
@@ -22,7 +36,7 @@ export async function register() {
 
   if (process.env.S3_ACCESS_KEY_ID && process.env.S3_SECRET_ACCESS_KEY) {
     try {
-      const { ensureBucket } = await import("./lib/storage");
+      const { ensureBucket } = await import(storageModule);
       await ensureBucket();
       console.log("[startup] storage bucket ready");
     } catch (err) {

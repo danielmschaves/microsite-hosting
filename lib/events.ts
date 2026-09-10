@@ -46,7 +46,12 @@ export type EventType =
   | "approval_requested"
   | "approval_decided"
   | "approval_expired"
-  | "preview_access_changed";
+  | "preview_access_changed"
+  // Agent Gateway (PRD v2.0 R3)
+  | "domain_added"
+  | "domain_verified"
+  | "domain_verification_failed"
+  | "domain_removed";
 
 export async function track(
   type: EventType,
