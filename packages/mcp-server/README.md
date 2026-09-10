@@ -1,7 +1,8 @@
 # @microbuild/mcp
 
-MCP server for MicroBuild — the 14 R1 agent tools (PRD v2.0 §9.2), each a thin bridge to
-`app/api/agent/**` in the main app.
+MCP server for MicroBuild — the 14 R1 agent tools (PRD v2.0 §9.2) plus 4 more from R2
+(`set_preview_access`, `request_publish`, `get_approval_status`, `claim_trial_site`), each a thin
+bridge to `app/api/agent/**` in the main app.
 
 ## Install
 
@@ -30,6 +31,6 @@ npm run build --workspace packages/mcp-server # tsc -> dist/
 (added in later SDK versions to support both zod v3 and v4) triggers TypeScript's "Type
 instantiation is excessively deep and possibly infinite" (TS2589) once more than a couple of tool
 schemas are registered in one file. `1.9.0`'s simpler `tool(name, description, shape, cb)` overload
-(plain `ZodRawShape`) compiles in ~1.5s against all 14 tools here. If bumping either dependency,
+(plain `ZodRawShape`) compiles in ~1.5s against all 18 tools here. If bumping either dependency,
 re-verify `npm run build --workspace packages/mcp-server` completes in a few seconds, not minutes —
 that regression is the signal something reintroduced the slow path.

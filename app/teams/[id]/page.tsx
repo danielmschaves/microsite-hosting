@@ -38,6 +38,18 @@ export default async function TeamPage({
 
   const agentGatewayEnabled = await isFlagEnabled("agent_console_ui", id);
 
+  const pendingApprovals =
+    agentGatewayEnabled && myRole !== "member"
+      ? Number(
+          (
+            await query<{ count: string }>(
+              "SELECT count(*) FROM approvals WHERE workspace_id = $1 AND status = 'pending' AND expires_at > now()",
+              [id],
+            )
+          )[0]?.count ?? 0,
+        )
+      : 0;
+
   const members = await query<{ email: string; role: string; joined_at: Date }>(
     `SELECT email, role, joined_at FROM workspace_members
       WHERE workspace_id = $1
@@ -157,6 +169,7 @@ export default async function TeamPage({
           minSeats: MIN_TEAM_SEATS,
         }}
         agentGatewayEnabled={agentGatewayEnabled}
+        pendingApprovals={pendingApprovals}
       />
     </>
   );

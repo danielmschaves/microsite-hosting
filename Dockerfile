@@ -3,6 +3,10 @@
 # --- deps: install node_modules ------------------------------------------------
 FROM node:20-alpine AS deps
 WORKDIR /app
+# argon2 (CD-15) ships prebuilt musl binaries for common targets, but when
+# none matches it falls back to compiling from source — this toolchain makes
+# that fallback succeed instead of failing the whole build on Alpine.
+RUN apk add --no-cache python3 make g++
 COPY package.json package-lock.json* ./
 RUN npm install
 

@@ -44,6 +44,7 @@ function errorResult(err: unknown) {
 const fileShape = z.object({ path: z.string(), content: z.string() });
 const ttlShape = z.enum(["24h", "7d", "30d", "90d"]);
 const visibilityShape = z.enum(["only_me", "allowlist", "team", "public"]);
+const accessModeShape = z.enum(["password", "organization", "hybrid", "inherit"]);
 
 export function registerTools(server: McpServer): void {
   server.tool(
@@ -158,6 +159,23 @@ export function registerTools(server: McpServer): void {
   );
 
   server.tool(
+    "set_preview_access",
+    "Set who can view a preview deployment: password-protected, organization-only (workspace members), hybrid (both), or inherit (the site's own visibility — the default).",
+    { deploymentId: z.string(), accessMode: accessModeShape, password: z.string().optional() },
+    async ({ deploymentId, accessMode, password }) => {
+      try {
+        return text(
+          await apiCall("PATCH", `/api/agent/previews/${deploymentId}`, {
+            body: { accessMode, password },
+          }),
+        );
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.tool(
     "publish_site",
     "Publish live, visible to your audience. Two-step: call once to get a confirmToken and a change summary, review it, then call again with that confirmToken to actually go live. Prefer promoting a deploymentId from create_preview over publishing blind.",
     {
@@ -213,6 +231,43 @@ export function registerTools(server: McpServer): void {
   );
 
   server.tool(
+    "request_publish",
+    "Request human approval to publish or roll back a site. Required when the workspace's publish_mode is \"approval\" — publish_site/rollback_to_version reject with approval_required in that mode instead of executing. Returns an approvalId to poll with get_approval_status.",
+    {
+      siteId: z.string(),
+      action: z.enum(["publish", "rollback"]),
+      deploymentId: z.string().optional(),
+      targetVersion: z.number().int().optional(),
+      ttlOverride: ttlShape.optional(),
+      message: z.string().optional(),
+    },
+    async ({ siteId, action, deploymentId, targetVersion, ttlOverride, message }) => {
+      try {
+        return text(
+          await apiCall("POST", `/api/agent/sites/${siteId}/publish/request`, {
+            body: { action, deploymentId, targetVersion, ttlOverride, message },
+          }),
+        );
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.tool(
+    "get_approval_status",
+    "Check the status of a publish/rollback approval request: pending, approved (with the resulting version), rejected, or expired.",
+    { approvalId: z.string() },
+    async ({ approvalId }) => {
+      try {
+        return text(await apiCall("GET", `/api/agent/approvals/${approvalId}`));
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.tool(
     "set_site_visibility",
     "Change who can view a site: only_me, allowlist (+ viewer emails), team, or public.",
     { siteId: z.string(), visibility: visibilityShape, viewers: z.array(z.string()).optional() },
@@ -248,6 +303,19 @@ export function registerTools(server: McpServer): void {
       try {
         const qs = confirmToken ? `?confirmToken=${encodeURIComponent(confirmToken)}` : "";
         return text(await apiCall("DELETE", `/api/agent/sites/${siteId}${qs}`));
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.tool(
+    "claim_trial_site",
+    "Claim an anonymous trial site (published via the /try no-signup flow) on behalf of the human this agent token was granted by — transfers ownership and extends the TTL to 7 days. Requires the raw guest token the browser session received.",
+    { guestToken: z.string(), trialId: z.string().optional() },
+    async ({ guestToken, trialId }) => {
+      try {
+        return text(await apiCall("POST", "/api/agent/guest/claim", { body: { guestToken, trialId } }));
       } catch (err) {
         return errorResult(err);
       }

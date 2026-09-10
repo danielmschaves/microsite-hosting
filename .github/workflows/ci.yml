@@ -32,3 +32,10 @@ jobs:
       # automatically — no workflow edit required.
       - name: Test
         run: npm test --if-present
+
+      # CD-15 added argon2 (a native/compiled dependency, the first in this
+      # repo) — ubuntu-latest above is glibc, so it can't catch an
+      # Alpine/musl-specific native-module build failure. This step runs the
+      # actual production image build to close that gap.
+      - name: Docker build
+        run: docker build -t microbuild-ci-check .

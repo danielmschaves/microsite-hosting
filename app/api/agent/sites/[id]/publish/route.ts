@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requestBase } from "@/lib/url";
-import { query, type DeploymentRow, type VersionRow, type WorkspaceRow } from "@/lib/db";
+import { query, type DeploymentRow, type VersionRow, type WorkspaceRow, type PublishMode } from "@/lib/db";
 import { isFlagEnabled } from "@/lib/flags";
 import { requireAgentScope } from "@/lib/agentAuthz";
 import { agentOwnedSite } from "@/lib/agentSites";
@@ -15,20 +15,30 @@ import { track } from "@/lib/events";
 
 export const runtime = "nodejs";
 
+// CD-16 NFR: publish_site's confirm token lives 10 minutes, not the default 5.
+const PUBLISH_CONFIRM_TTL_MS = 10 * 60 * 1000;
+
 interface PublishBody {
   deploymentId?: string;
   ttl?: string;
   confirmToken?: string;
 }
 
-// POST /api/agent/sites/{id}/publish — publish_site (publish:confirm),
-// two-step confirmation. Step 1 (no confirmToken) returns {confirmToken,
-// summary}, including a soft `warning` when publishing without having gone
-// through create_preview first (packages/skill/SKILL.md's guardrail is soft
-// by design — see CLAUDE.md — because rollback_to_version explicitly
-// publishes without a preview too, so a hard block here would be
-// inconsistent). Step 2 requires the confirmToken AND a mandatory
-// Idempotency-Key header per the NFR table.
+// POST /api/agent/sites/{id}/publish — publish_site (publish:confirm).
+// Gated by the workspace's publish_mode (CD-16):
+//   - "direct": no confirmation step, executes on the first call.
+//   - "confirm": two-step HMAC confirm token (10-minute TTL), the default.
+//   - "approval": always rejected here — agents cannot self-approve
+//     regardless of scope; only request_publish (a separate publish:request
+//     scope) can start a review, and only a human deciding on
+//     POST /api/approvals/{id} can actually execute the publish.
+// Step 1 (no confirmToken, confirm mode) returns {confirmToken, summary},
+// including a soft `warning` when publishing without having gone through
+// create_preview first (packages/skill/SKILL.md's guardrail is soft by
+// design — see CLAUDE.md — because rollback_to_version explicitly publishes
+// without a preview too, so a hard block here would be inconsistent). The
+// execute step always requires a mandatory Idempotency-Key header per the
+// NFR table, regardless of publish_mode.
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -42,6 +52,24 @@ export async function POST(
 
   const site = await agentOwnedSite(id, authRes.workspaceId);
   if (!site) return notFound();
+
+  const workspaceRows = site.workspace_id
+    ? await query<WorkspaceRow>("SELECT * FROM workspaces WHERE id = $1", [site.workspace_id])
+    : [];
+  const workspace = workspaceRows[0] ?? null;
+  const mode: PublishMode = workspace?.publish_mode ?? "confirm";
+
+  if (mode === "approval") {
+    return NextResponse.json(
+      {
+        error: "approval_required",
+        message:
+          "This workspace requires human approval to publish. Call request_publish to start a review.",
+        publishMode: "approval",
+      },
+      { status: 400 },
+    );
+  }
 
   const bodyText = await req.text();
   const body: PublishBody = bodyText ? JSON.parse(bodyText) : {};
@@ -59,10 +87,10 @@ export async function POST(
     }
   }
 
-  if (!body.confirmToken) {
+  if (mode === "confirm" && !body.confirmToken) {
     const hasReadyPreview = Boolean(previewDeployment);
     return NextResponse.json({
-      confirmToken: createConfirmToken("publish_site", site.id, authRes.tokenId),
+      confirmToken: createConfirmToken("publish_site", site.id, authRes.tokenId, PUBLISH_CONFIRM_TTL_MS),
       summary: {
         slug: site.slug,
         promoting: previewDeployment ? previewDeployment.id : "current content",
@@ -77,12 +105,14 @@ export async function POST(
     });
   }
 
-  const verified = verifyConfirmToken(body.confirmToken, "publish_site", site.id, authRes.tokenId);
-  if (!verified.ok) {
-    return NextResponse.json(
-      { error: "invalid_confirm_token", message: verified.reason },
-      { status: 400 },
-    );
+  if (mode === "confirm") {
+    const verified = verifyConfirmToken(body.confirmToken!, "publish_site", site.id, authRes.tokenId);
+    if (!verified.ok) {
+      return NextResponse.json(
+        { error: "invalid_confirm_token", message: verified.reason },
+        { status: 400 },
+      );
+    }
   }
 
   const idempotencyKey = req.headers.get("idempotency-key");
@@ -123,10 +153,7 @@ export async function POST(
         return { status: 400, body: { error: "invalid_request", message: "ttl must be 24h, 7d, 30d or 90d" } };
       }
 
-      const workspaceRows = site.workspace_id
-        ? await query<WorkspaceRow>("SELECT * FROM workspaces WHERE id = $1", [site.workspace_id])
-        : [];
-      const plan = planForWorkspace(workspaceRows[0] ?? null);
+      const plan = planForWorkspace(workspace);
 
       const published = await publishSiteVersion({
         site,

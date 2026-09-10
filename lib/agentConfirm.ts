@@ -27,13 +27,23 @@ function sign(payloadB64: string): string {
   return createHmac("sha256", secretKey()).update(payloadB64).digest("base64url");
 }
 
-/** Mint a confirmation token for `action` on `resourceId`, bound to the caller's token. */
-export function createConfirmToken(action: string, resourceId: string, tokenId: string): string {
+/**
+ * Mint a confirmation token for `action` on `resourceId`, bound to the
+ * caller's token. `ttlMs` defaults to 5 minutes; publish_site/
+ * rollback_to_version pass 10 minutes explicitly per CD-16's NFR — one
+ * mechanism, two TTLs, rather than a second token type.
+ */
+export function createConfirmToken(
+  action: string,
+  resourceId: string,
+  tokenId: string,
+  ttlMs: number = CONFIRM_TTL_MS,
+): string {
   const payload: ConfirmPayload = {
     action,
     resourceId,
     tokenId,
-    exp: Date.now() + CONFIRM_TTL_MS,
+    exp: Date.now() + ttlMs,
   };
   const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
   return `${payloadB64}.${sign(payloadB64)}`;

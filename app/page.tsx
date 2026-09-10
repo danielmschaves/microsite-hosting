@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
-import { ShieldCheck, LockKeyhole, EyeOff, Timer, Users } from "lucide-react";
+import Link from "next/link";
+import { ShieldCheck, LockKeyhole, EyeOff, Timer, Users, Sparkles } from "lucide-react";
 import { auth, enabledProviders } from "@/auth";
 import { ProviderSignIn, DevSignIn } from "@/components/AuthButtons";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -144,6 +145,22 @@ export default async function Home() {
               <Timer size={12} /> Self-destructs
             </span>
           </div>
+        </div>
+
+        <div style={{ textAlign: "center", marginTop: 18 }}>
+          <Link
+            href="/try"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              font: "600 12.5px/1 var(--font-ui)",
+              color: "var(--text-muted)",
+            }}
+          >
+            <Sparkles size={13} style={{ color: "var(--accent)" }} />
+            Try it free — no account needed
+          </Link>
         </div>
       </div>
     </div>

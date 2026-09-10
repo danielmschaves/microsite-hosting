@@ -39,7 +39,14 @@ export type EventType =
   | "agent_client_authorized"
   | "agent_token_created"
   | "agent_token_revoked"
-  | "agent_action";
+  | "agent_action"
+  // Agent Gateway (PRD v2.0 R2)
+  | "guest_site_published"
+  | "site_claimed"
+  | "approval_requested"
+  | "approval_decided"
+  | "approval_expired"
+  | "preview_access_changed";
 
 export async function track(
   type: EventType,

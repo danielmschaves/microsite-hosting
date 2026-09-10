@@ -30,6 +30,7 @@ import {
   UserPlus,
   Building2,
   Bot,
+  CheckCircle2,
 } from "lucide-react";
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -78,6 +79,7 @@ export function TeamPanel({
   audit = [],
   billing,
   agentGatewayEnabled = false,
+  pendingApprovals = 0,
 }: {
   workspace: { id: string; name: string; plan: string; maxTtl: string | null };
   myRole: string;
@@ -88,6 +90,7 @@ export function TeamPanel({
   audit?: AuditEntry[];
   billing?: BillingInfo;
   agentGatewayEnabled?: boolean;
+  pendingApprovals?: number;
 }) {
   const router = useRouter();
   const isAdmin = myRole === "admin" || myRole === "owner";
@@ -378,10 +381,35 @@ export function TeamPanel({
         {isAdmin && (
           <div style={{ display: "flex", gap: 10 }}>
             {agentGatewayEnabled && (
-              <Link href={`/teams/${workspace.id}/agents`} className="btn btn-neutral">
-                <Bot size={16} />
-                Agents
-              </Link>
+              <>
+                <Link
+                  href={`/teams/${workspace.id}/approvals`}
+                  className="btn btn-neutral"
+                  style={{ position: "relative" }}
+                >
+                  <CheckCircle2 size={16} />
+                  Approvals
+                  {pendingApprovals > 0 && (
+                    <span
+                      className="mb-mono"
+                      style={{
+                        marginLeft: 2,
+                        padding: "1px 6px",
+                        borderRadius: 999,
+                        background: "var(--warning)",
+                        color: "#1a1200",
+                        font: "700 10.5px/1.4 var(--font-mono)",
+                      }}
+                    >
+                      {pendingApprovals}
+                    </span>
+                  )}
+                </Link>
+                <Link href={`/teams/${workspace.id}/agents`} className="btn btn-neutral">
+                  <Bot size={16} />
+                  Agents
+                </Link>
+              </>
             )}
             <button
               onClick={() =>

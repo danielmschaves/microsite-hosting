@@ -2,11 +2,19 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bell, BellRing, Timer, TimerReset } from "lucide-react";
+import { Bell, BellRing, Timer, TimerReset, CheckCircle2 } from "lucide-react";
 
 interface NotifItem {
   id: string;
   slug: string;
+  expiresAt: string;
+}
+
+interface ApprovalNotifItem {
+  id: string;
+  slug: string;
+  action: string;
+  workspaceId: string;
   expiresAt: string;
 }
 
@@ -21,6 +29,7 @@ function leftLabel(iso: string): { label: string; urgent: boolean } {
 export function NotificationsBell() {
   const router = useRouter();
   const [items, setItems] = useState<NotifItem[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalNotifItem[]>([]);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -31,6 +40,7 @@ export function NotificationsBell() {
       if (!res.ok) return;
       const data = await res.json();
       setItems(Array.isArray(data.items) ? data.items : []);
+      setApprovals(Array.isArray(data.pendingApprovals) ? data.pendingApprovals : []);
     } catch {
       /* bell is best-effort */
     }
@@ -78,7 +88,7 @@ export function NotificationsBell() {
         style={{ position: "relative", width: 32, height: 32, borderRadius: 8 }}
       >
         <Bell size={15} />
-        {items.length > 0 && (
+        {items.length + approvals.length > 0 && (
           <span
             style={{
               position: "absolute",
@@ -213,6 +223,51 @@ export function NotificationsBell() {
                 </div>
               );
             })
+          )}
+
+          {approvals.length > 0 && (
+            <>
+              <div
+                style={{
+                  padding: "9px 16px",
+                  borderTop: "1px solid var(--border)",
+                  font: "700 10.5px/1 var(--font-mono)",
+                  letterSpacing: ".06em",
+                  textTransform: "uppercase",
+                  color: "var(--text-subtle)",
+                }}
+              >
+                Pending approvals
+              </div>
+              {approvals.map((a) => (
+                <a
+                  key={a.id}
+                  href={`/teams/${a.workspaceId}/approvals`}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 11,
+                    padding: "12px 16px",
+                    borderTop: "1px solid var(--border)",
+                  }}
+                >
+                  <CheckCircle2 size={16} style={{ color: "var(--accent)", flex: "none" }} />
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      font: "600 12.5px/1.3 var(--font-ui)",
+                      color: "var(--text)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {a.action} &ldquo;{a.slug}&rdquo;
+                  </span>
+                </a>
+              ))}
+            </>
           )}
 
           <div
