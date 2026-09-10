@@ -1,0 +1,6 @@
+{
+  "name": "@microbuild/skill",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code Skill packaging for MicroBuild — see SKILL.md."
+}

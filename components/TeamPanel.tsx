@@ -29,6 +29,7 @@ import {
   Download,
   UserPlus,
   Building2,
+  Bot,
 } from "lucide-react";
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -76,6 +77,7 @@ export function TeamPanel({
   sites = [],
   audit = [],
   billing,
+  agentGatewayEnabled = false,
 }: {
   workspace: { id: string; name: string; plan: string; maxTtl: string | null };
   myRole: string;
@@ -85,6 +87,7 @@ export function TeamPanel({
   sites?: TeamSite[];
   audit?: AuditEntry[];
   billing?: BillingInfo;
+  agentGatewayEnabled?: boolean;
 }) {
   const router = useRouter();
   const isAdmin = myRole === "admin" || myRole === "owner";
@@ -373,15 +376,23 @@ export function TeamPanel({
           </p>
         </div>
         {isAdmin && (
-          <button
-            onClick={() =>
-              inviteRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })
-            }
-            className="btn btn-primary"
-          >
-            <UserPlus size={16} />
-            Invite member
-          </button>
+          <div style={{ display: "flex", gap: 10 }}>
+            {agentGatewayEnabled && (
+              <Link href={`/teams/${workspace.id}/agents`} className="btn btn-neutral">
+                <Bot size={16} />
+                Agents
+              </Link>
+            )}
+            <button
+              onClick={() =>
+                inviteRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })
+              }
+              className="btn btn-primary"
+            >
+              <UserPlus size={16} />
+              Invite member
+            </button>
+          </div>
         )}
       </div>
 

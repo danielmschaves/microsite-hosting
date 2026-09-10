@@ -7,6 +7,9 @@ out/
 next-env.d.ts
 *.tsbuildinfo
 
+# packages/mcp-server build output
+packages/mcp-server/dist/
+
 # Environment variables
 .env
 .env.local
