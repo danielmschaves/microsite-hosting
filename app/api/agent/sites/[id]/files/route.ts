@@ -80,6 +80,9 @@ export async function PATCH(
     pageCount,
     ttl: site.ttl_preset,
     versionLimit: plan.versionLimit,
+    actorType: "agent",
+    agentClientId: authRes.agentClientId,
+    source: "agent",
   });
 
   await track("agent_action", {

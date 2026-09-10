@@ -5,8 +5,7 @@ import { isFlagEnabled } from "@/lib/flags";
 import { requireAgentScope } from "@/lib/agentAuthz";
 import { agentOwnedSite } from "@/lib/agentSites";
 import { listPrefix } from "@/lib/storage";
-import { resolveIndex } from "@/lib/createSite";
-import { publishDeployment } from "@/lib/deployments";
+import { resolveIndex, publishSiteVersion } from "@/lib/createSite";
 import { planForWorkspace } from "@/lib/plan";
 import { isTtlPreset } from "@/lib/ttl";
 import { createConfirmToken, verifyConfirmToken } from "@/lib/agentConfirm";
@@ -129,7 +128,7 @@ export async function POST(
         : [];
       const plan = planForWorkspace(workspaceRows[0] ?? null);
 
-      const published = await publishDeployment({
+      const published = await publishSiteVersion({
         site,
         email: authRes.email,
         s3Prefix,
@@ -157,7 +156,7 @@ export async function POST(
         body: {
           ok: true,
           version: published.version,
-          deploymentId: published.deployment.id,
+          deploymentId: published.deployment?.id ?? null,
           url: `${base}/s/${published.site.slug}`,
           expiresAt: new Date(published.site.expires_at).toISOString(),
         },
