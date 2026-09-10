@@ -46,9 +46,12 @@ export const ALL_SCOPES: AgentScope[] = [
   "insights:read",
 ];
 
-// The 14 R1 tools only exercise these 8 — the rest exist in the type/DB now
-// (cheap, matches "mirrors Showly's model") but no route enforces them until
-// a later release ships the tools that use them.
+// The 14 R1 tools only exercise these 8 — the rest existed in the type/DB
+// from R0 (cheap, matches "mirrors Showly's model") but had no route
+// enforcing them until R2 shipped the tools that use them. R2 additionally
+// enforces "publish:request" (request_publish, get_approval_status). Kept
+// as a historical R1 marker rather than renamed/expanded — new scopes get
+// enforced by the routes that check them directly, not by growing this list.
 export const R1_ENFORCED_SCOPES: AgentScope[] = [
   "project:read",
   "site:read",

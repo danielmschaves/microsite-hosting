@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Built and deployed: the MVP (PRD §8) plus the v1.0 feature set (teams/workspaces, billing, multi-page sites, presigned uploads, trash, versioning, token API, public links, expiry notifications). The full specification is in `PRD.md`; the sections below describe what exists in the codebase.
 
-**In progress, behind flags (PRD v2.0 — R0 Foundation + R1 Agent Gateway + R2 in progress):** an MCP server, OAuth 2.1 for agents, and a scoped agent-token model sit alongside the v1.0 product with **zero user-visible change** while the corresponding `MICROBUILD_FLAG_*` env vars are unset. R2's first piece (CD-14) has landed: every publish path (not just the agent one) now maintains `versions`/`deployments` bookkeeping, and `/s/[slug]` serving can read from it behind the `deployment_serving` flag, self-healing to the legacy `sites.s3_prefix` columns on any inconsistency. See "Agent Gateway (PRD v2.0)" below. `PRD-v2.md` (if present) has the full seven-release plan.
+**In progress, behind flags (PRD v2.0 — R0 Foundation + R1 Agent Gateway + R2 Previews/gates/guest publish):** an MCP server, OAuth 2.1 for agents, and a scoped agent-token model sit alongside the v1.0 product with **zero user-visible change to existing flows** while the corresponding `MICROBUILD_FLAG_*` env vars are unset. R2 has landed in full: CD-14 (every publish path — not just the agent one — now maintains `versions`/`deployments` bookkeeping, and `/s/[slug]` serving can read from it behind the `deployment_serving` flag, self-healing to the legacy `sites.s3_prefix` columns on any inconsistency); CD-15 (per-preview access modes — password/organization/hybrid, argon2id); CD-16 (a workspace `publish_mode` gate — direct/confirm/approval — in front of agent publish/rollback); CD-17 (human approvals for gated publishes/rollbacks, `/teams/[id]/approvals`); CD-18 (anonymous no-signup trial publish at `/try` + claim at `/claim` — the one R2 piece that is deliberately new, live, user-facing surface, not hidden behind a flag, since guest publish has no existing behavior to stay invisible to); CD-19 (cleanup phase 5: approvals sweep, immediate purge for unclaimed guest trials, orphaned preview cleanup). See "Agent Gateway (PRD v2.0)" below. `PRD-v2.md` (if present) has the full seven-release plan.
 
 ## Build Goal (PRD §8.5)
 
@@ -60,6 +60,8 @@ Pages (App Router):
 - `/plans` — Free/Team/Business pricing cards driven by `lib/plan.ts` constants; renders for anonymous and signed-in users
 - `/api-cli` — API & CLI page: curl example, access-token manager (secret shown once), REST endpoint reference
 - `/invite/[token]` — invite acceptance (email-bound, 14d expiry)
+- `/try` — anonymous no-signup trial publish (PRD v2.0 CD-18): one `.html` file ≤5MB, fixed 24h TTL + public visibility, 3 publishes/hour/IP; result card links to `/claim`
+- `/claim` — session-gated: claims every unclaimed trial site the caller's `mb_guest_token` cookie matches, extends TTL to 7d, transfers ownership
 
 API / handlers:
 - `/s/[slug]/[[...path]]` — content serving: site lookup first, then session gate (skipped only for `public`), then `canViewSite`, then stream from S3; records a `site_view` event (actor NULL for anonymous)
@@ -67,8 +69,10 @@ API / handlers:
 - `/api/sites/[id]` — DELETE (move to trash; `?permanent=true` purges storage incl. all version prefixes) · PATCH (`{ttl}` extend, `{slug}` rename — metadata-only, prefix never moves, `{visibility}`, `{index}` set-as-index, `{action:"restore"|"force_expire"}`); ttl/slug/visibility live in `lib/siteMutations.ts`, shared with the v1 API
 - `/api/sites/[id]/versions/rollback` — POST `{version}`: instant metadata pointer flip to a retained version
 - `/api/sites/[id]/viewers` — GET/POST/DELETE: allowlist CRUD, effective immediately
-- `/api/cleanup` — GET/POST, `Authorization: Bearer $CRON_SECRET`: phase 0 sends T-48h/T-2h expiry emails (marker columns keep any cadence idempotent); phase 1 trashes expired sites (storage kept); phase 2 purges storage for sites trashed > 7 days via `purgeSiteStorage`; phase 3 purges incomplete presigned uploads > 24h
-- `/api/notifications` — GET: caller's live sites expiring <48h (feeds the AppBar bell; no read-state)
+- `/api/cleanup` — GET/POST, `Authorization: Bearer $CRON_SECRET`: phase 0 sends T-48h/T-2h expiry emails (marker columns keep any cadence idempotent); phase 1 trashes expired sites (storage kept); phase 2 purges storage for sites trashed > 7 days via `purgeSiteStorage` (unclaimed guest-trial sites skip the grace period — purged as soon as trashed); phase 3 purges incomplete presigned uploads > 24h; phase 4 sweeps stale OAuth requests/rate-limit/idempotency state; phase 5 (PRD v2.0 CD-19) expires+prunes `approvals` and cancels+purges orphaned preview `deployments` stuck in `queued`/`building`/`ready`
+- `/api/notifications` — GET: caller's live sites expiring <48h, plus (CD-17) pending agent approval requests in workspaces the caller admins (feeds the AppBar bell; no read-state)
+- `/api/guest/publish` — POST, anonymous, multipart single `.html` file: backs `/try`; `lib/guestPublish.ts`
+- `/api/guest/claim` — POST, session-required: backs `/claim`; reads the `mb_guest_token` cookie server-side
 - `/api/tokens` (+`/[id]`) — session-only API-token CRUD (`lib/apiTokens.ts`; sha256 hash stored, secret returned exactly once)
 - `/api/v1/sites[...]` — Bearer-token REST API (owner-scoped): GET list, POST create/republish (multipart ≤4MB), PUT `{slug}/content` new version, PATCH ttl/visibility/slug, DELETE trash/`?permanent=true`
 - `/api/upload/presign` + `/api/upload/complete` — presigned browser→S3 path (no server body cap); `/api/upload` is the ≤4MB multipart fallback; both share `lib/createSite.ts` and support re-publish (update mode)
@@ -76,13 +80,18 @@ API / handlers:
 - `/api/invites/[token]` — POST accept (session email must equal invited email)
 - `/api/stripe/webhook` — signature-verified; `lib/billing.ts` `syncSubscriptionToWorkspace` is the SOLE writer of plan/seats/status
 
-Agent Gateway (PRD v2.0 R0/R1 — all behind flags, see below):
+Agent Gateway (PRD v2.0 R0/R1/R2 — all behind flags, see below):
 - `/oauth/consent`, `/oauth/device` — human-facing OAuth consent + device-code verification pages
 - `/teams/[id]/agents` — Agent Console (admin-only): connected clients, tokens + scope chips, revoke, 24h activity feed
-- `/s/[slug]/preview/[deploymentId]/[[...path]]` — preview-deployment serving; gated on the *site's* `canViewSite` plus `deployments.status='ready' AND target='preview'`; never touches the live `sites` pointer
+- `/teams/[id]/approvals` — Approvals inbox (admin-only, CD-17): pending agent publish/rollback requests, approve/reject with an optional note, keyboard-only (plain `<button>`/`<input>`, no click-handler `<div>`s)
+- `/s/[slug]/preview/[deploymentId]/[[...path]]` — preview-deployment serving; gated on `deployments.status='ready' AND target='preview'` PLUS the deployment's own `access_mode` (CD-15): `inherit` (default) keeps the exact pre-CD-15 behavior (the site's own `canViewSite`); `organization` requires workspace membership; `password`/`hybrid` require a signed `mb_preview_pw_<deploymentId>` cookie proving a prior argon2id password check (`POST` on the same route renders/handles the password form) — never touches the live `sites` pointer
 - `/api/oauth/authorize`, `/api/oauth/consent`, `/api/oauth/token`, `/api/oauth/device` — OAuth 2.1 auth-code+PKCE and device-code flows; state in `agent_oauth_requests`
-- `/api/agent/projects`, `/api/agent/sites[...]`, `/api/agent/previews/[id]` — the 14 R1 MCP tools' REST surface, Bearer `agent_tokens` auth via `lib/agentAuthz.ts` `requireAgentScope`, workspace-scoped (never owner-email scoped like `/api/v1`)
+- `/api/agent/projects`, `/api/agent/sites[...]`, `/api/agent/previews/[id]` — the 14 R1 MCP tools' REST surface, Bearer `agent_tokens` auth via `lib/agentAuthz.ts` `requireAgentScope`, workspace-scoped (never owner-email scoped like `/api/v1`); `/api/agent/previews/[id]` also takes `PATCH` (`set_preview_access`, CD-15)
+- `/api/agent/sites/[id]/publish/request` — POST, `publish:request`: `request_publish` — creates a pending `approvals` row (CD-17); the only route that ever inserts into `approvals`, so "agents cannot self-approve" has one structural home
+- `/api/agent/approvals/[id]` — GET, `publish:request` (cheap read bucket): `get_approval_status`
+- `/api/agent/guest/claim` — POST, `site:write`: `claim_trial_site` (CD-18) — claims trial site(s) to the agent token's `granted_by` email
 - `/api/agent-tokens/[id]`, `/api/agent-activity` — session-authenticated Agent Console CRUD/feed
+- `/api/approvals/[id]` — POST, **session-authenticated only, never Bearer** (CD-17): `{decision: "approve"|"reject", note?}`, admin+ only — this omission of `requireAgentScope` IS the "agents cannot self-approve" enforcement mechanism, not a policy check layered on top
 - `/api/admin/backfill-deployments` — `CRON_SECRET`-authed, one-time-but-idempotent backfill of `versions`/`deployments` from `site_versions`/`sites` + a read-only addressing-parity verifier (`lib/backfillDeployments.ts`)
 
 ## Authorization & plans
@@ -112,9 +121,9 @@ Lifecycle: live (`deleted_at IS NULL`, unexpired) → trash (`deleted_at` set, s
 
 Auth uses JWT sessions (no DB adapter), so there is no `users` table — the allowlist is matched against the session email.
 
-**Agent Gateway tables (PRD v2.0 R0/R1, additive only — see "Agent Gateway" below):** `versions`/`deployments` (new deployment-model bookkeeping layered on top of `sites`/`site_versions`, which remain the source of truth for serving), `agent_clients`/`agent_tokens` (workspace-scoped, scoped OAuth tokens — distinct from the owner-scoped, full-account `api_tokens`), `agent_oauth_requests` (short-lived PKCE/device-code state), `idempotency_keys`/`rate_limit_buckets` (Postgres-backed, no Redis), `feature_flags`, `cas_refs` (content-addressed storage refcounts, unused until a publish path is wired to `lib/cas.ts`).
+**Agent Gateway tables (PRD v2.0 R0/R1/R2, additive only — see "Agent Gateway" below):** `versions`/`deployments` (new deployment-model bookkeeping layered on top of `sites`/`site_versions`, which remain the source of truth for serving), `agent_clients`/`agent_tokens` (workspace-scoped, scoped OAuth tokens — distinct from the owner-scoped, full-account `api_tokens`), `agent_oauth_requests` (short-lived PKCE/device-code state), `idempotency_keys`/`rate_limit_buckets` (Postgres-backed, no Redis), `feature_flags`, `cas_refs` (content-addressed storage refcounts, unused until a publish path is wired to `lib/cas.ts`), `workspaces.publish_mode` (CD-16: `direct|confirm|approval`, default `confirm`), `approvals` (CD-17: pending/decided publish-or-rollback requests, `resulting_version` set only on approve), `guest_sites` (CD-18: `guest_token_hash` — sha256 of the `mb_guest_token` cookie — mapped to a plain `sites` row, `UNIQUE(site_id)`, `claimed_by`/`claimed_at` set on claim).
 
-## Agent Gateway (PRD v2.0 — R0 Foundation + R1 Agent Gateway)
+## Agent Gateway (PRD v2.0 — R0 Foundation + R1 Agent Gateway + R2 Previews/gates/guest publish)
 
 Lets an AI agent (Claude Code, Codex, Cursor) go from "I have an HTML file" to a private, expiring
 URL via MCP tools instead of the human dashboard — with `visibility` and `ttl` as *required*
@@ -138,6 +147,12 @@ feature flags (`lib/flags.ts`) so v1.0 behavior is byte-for-byte unchanged while
   served today, since every publish path keeps `versions.storage_key` equal to `sites.s3_prefix` by
   construction (see below).
 
+CD-15 through CD-19 introduce **no new flags** — CD-15/16/17 reuse `agent_gateway` (their routes
+all live under `/api/agent/**`) and `agent_console_ui` (the Approvals inbox reuses the same
+admin-surface gate as the Agent Console), and CD-18's guest publish (`/try`, `/claim`) is
+deliberately unflagged: it is new, additive, user-facing surface with no existing v1.0 behavior to
+stay invisible to, unlike the Agent Gateway proper.
+
 **Data model / auth model:** `sites.production_deployment_id` points at a `deployments` row that
 **every** publish path now maintains — `lib/createSite.ts`'s `publishSiteVersion` (dashboard
 upload, presigned completion, v1 API) and `createSiteRecord` (every new site) both call
@@ -156,32 +171,75 @@ deliberately does **not** reuse `/api/v1`'s owner-email-only `ownedSite()` helpe
 `lib/deployments.ts`'s state machine (`queued→building→ready→published|failed|canceled`) is
 additive bookkeeping layered on top of `publishSiteVersion`, not a replacement for it.
 
+**Preview access modes (CD-15):** each `deployments` row carries its own `access_mode`
+(`password|organization|hybrid|inherit`, default `inherit`) and `access_password_hash`
+(argon2id — the real `argon2` npm package, the first compiled/native dependency in this repo;
+`Dockerfile`'s `deps` stage installs `python3 make g++` so its build succeeds on Alpine even without
+a matching prebuilt binary, and CI runs an actual `docker build` to catch a musl-specific failure
+the glibc `ubuntu-latest` runner can't). `inherit` is byte-for-byte the pre-CD-15 behavior (the
+site's own `canViewSite`); `organization` requires workspace membership regardless of the site's own
+visibility; `password`/`hybrid` gate on a signed `mb_preview_pw_<deploymentId>` cookie
+(`lib/previewAccess.ts`, same HMAC construction as `lib/agentConfirm.ts`) proving a prior password
+check — the plaintext password is never stored, only its argon2id hash.
+
+**Publish gate (CD-16):** `workspaces.publish_mode` (`direct|confirm|approval`, default `confirm`)
+governs `publish_site`/`rollback_to_version`. `direct` skips confirmation and executes on the first
+call; `confirm` is the pre-R2 two-step HMAC flow, now with a 10-minute TTL (`lib/agentConfirm.ts`'s
+`createConfirmToken`/`verifyConfirmToken` took an optional `ttlMs`, default unchanged at 5 minutes
+for `delete_site`); `approval` always rejects with `{error:"approval_required"}` — neither
+`/api/agent/sites/[id]/publish` nor `.../rollback` ever creates an `approvals` row itself, so a
+`publish:confirm`-scoped token has no path around a human decision even if it tries.
+
+**Approvals (CD-17):** `request_publish` creates a pending `approvals` row (72h expiry, deduped
+against an existing pending request for the same `(site_id, action)`) and emails every admin+
+workspace member (`lib/email.ts`'s `approvalRequestedEmail`, degrading like every other email here).
+A human decides on `POST /api/approvals/{id}` — **session-authenticated only**, no `requireAgentScope`
+import anywhere in that file; that absence is the entire "agents cannot self-approve" enforcement,
+not a check layered on top of a shared auth path. Approving executes the underlying
+`publishSiteVersion`/`rollbackToVersion` attributed to the original requester
+(`approvals.requested_by`), not the approver, and records `resulting_version`.
+
+**Guest publish + claim (CD-18):** `lib/guestPublish.ts` — deliberately not built on
+`lib/uploadService.ts`'s `performServerUpload`, which assumes an authenticated email and
+workspace/plan context a `/try` visitor doesn't have. One file, 5MB cap (stricter than any
+authenticated tier), fixed `24h`/`public`, `owner_email` synthesized as
+`guest+<hex>@guest.microbuild.invalid` (RFC 2606 `.invalid`, never deliverable, never collides).
+3 publishes/hour/IP (`lib/requestIp.ts` — first `X-Forwarded-For` hop, `"unknown"` with no reverse
+proxy in front, an explicit dev-only limitation). The `mb_guest_token` cookie is intentionally
+non-unique per site, so one browser can accumulate multiple trial sites before claiming them all at
+`/claim`; claiming extends the TTL to 7d and clears notification markers so a freshly-claimed site
+doesn't expire minutes later.
+
 **Packages:** `packages/mcp-server` (`@microbuild/mcp`, npm workspace) — stdio MCP server, `npx
 @microbuild/mcp install --to claude-code|codex|cursor` writes client config and runs the
 device-code auth flow; `packages/skill` (`@microbuild/skill`) — `SKILL.md` workflow guidance
 (always pass explicit visibility/ttl, preview before publish).
 
 **Two-step confirmation:** `publish_site`, `rollback_to_version`, `delete_site` each return an
-HMAC-signed `confirmToken` (keyed on `AUTH_SECRET`, `lib/agentConfirm.ts`, 5-minute expiry) on a
-first call and require it on the second. `publish_site`/`rollback_to_version` also require an
-`Idempotency-Key` header (`lib/idempotency.ts`, replay window 24h, Postgres-backed); rate limits
-are enforced per-token in `requireAgentScope` (`lib/rateLimit.ts`: 120 reads/min, 20 writes/min, 5
-publishes/min).
+HMAC-signed `confirmToken` (keyed on `AUTH_SECRET`, `lib/agentConfirm.ts`) on a first call and
+require it on the second — `delete_site` at the original 5-minute TTL, `publish_site`/
+`rollback_to_version` at 10 minutes per CD-16's NFR (only when the workspace's `publish_mode` is
+`confirm`; see "Publish gate" above for `direct`/`approval`). `publish_site`/`rollback_to_version`
+also require an `Idempotency-Key` header (`lib/idempotency.ts`, replay window 24h, Postgres-backed)
+regardless of `publish_mode`; rate limits are enforced per-token in `requireAgentScope`
+(`lib/rateLimit.ts`: 120 reads/min, 20 writes/min, 5 publishes/min).
 
 ## Scope
 
 **Shipped (MVP + v1.0):** multi-page `.html` upload (multipart + presigned), login-walled viewing (Google/GitHub), per-site allowlists, public link mode, TTL presets + notifications (T-48h/T-2h email + bell), trash/restore/purge via cron, versioning + rollback, teams/workspaces with roles/invites/audit/billing (Stripe), max-TTL policy, token REST API, dashboard/trash/plans/api-cli pages.
 
-**Built, behind flags (PRD v2.0 R0+R1):** MCP server + 14 agent tools, OAuth 2.1 (auth-code+PKCE +
-device-code) for agents, scoped `agent_tokens`, preview deployments, deployment state machine,
-Agent Console UI, Postgres-backed rate limiting/idempotency, content-addressed storage primitives
-(`lib/cas.ts`, not yet wired into any publish path). See "Agent Gateway" above.
+**Built, behind flags (PRD v2.0 R0+R1+R2):** MCP server + 18 agent tools, OAuth 2.1 (auth-code+PKCE +
+device-code) for agents, scoped `agent_tokens`, preview deployments (with password/organization/
+hybrid access modes), deployment state machine, Agent Console UI, Postgres-backed rate
+limiting/idempotency, content-addressed storage primitives (`lib/cas.ts`, not yet wired into any
+publish path), a workspace publish-approval gate + inbox UI, and (unflagged, deliberately
+user-facing) anonymous no-signup trial publish + claim. See "Agent Gateway" above.
 
-**Still out (v1.1+ / PRD v2.0 R2+):** dedicated CLI package (`@microbuild/cli` — the human-facing
+**Still out (v1.1+ / PRD v2.0 R3+):** dedicated CLI package (`@microbuild/cli` — the human-facing
 v1 API already exists; `@microbuild/mcp` is the agent-facing one), custom SSO (SAML/OIDC, M3),
 subdomain-per-site, rate limiting on the v1 API (the *agent* API is rate-limited; v1 is not),
-anonymous-view event retention sweep, publish approval workflow, custom domains, version diffs,
-build pipeline, guest/no-signup publish.
+anonymous-view event retention sweep, custom domains, version diffs, build pipeline, an admin UI for
+changing a workspace's `publish_mode` (DB/API only today).
 
 ## Environment Variables (core ones required; see DEPLOY.md for optional Resend/Stripe/presign vars)
 
@@ -207,10 +265,13 @@ DATABASE_URL=          # postgres:// connection string
 NEXTAUTH_URL=          # e.g. http://localhost:3000
 
 # Agent Gateway (PRD v2.0 R0/R1/R2) — all optional, default off/unset
-CRON_SECRET=                          # also gates /api/admin/backfill-deployments
+CRON_SECRET=                          # also gates /api/admin/backfill-deployments + cleanup phase 5
 MICROBUILD_FLAG_AGENT_GATEWAY=false
 MICROBUILD_FLAG_AGENT_OAUTH=false
 MICROBUILD_FLAG_AGENT_CONSOLE_UI=false
 MICROBUILD_FLAG_DEPLOYMENT_SERVING=false
 MICROBUILD_BASE_URL=                  # packages/mcp-server: which deployment to talk to
+# CD-15 through CD-19 add no new env vars: publish_mode lives in the
+# workspaces table (DB/API-set only, no admin UI yet), preview access modes
+# and guest publish need no flag at all (see "Agent Gateway" above).
 ```

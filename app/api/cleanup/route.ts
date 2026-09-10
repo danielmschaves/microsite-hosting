@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { query, type SiteRow } from "@/lib/db";
+import { query, type SiteRow, type DeploymentRow, type VersionRow } from "@/lib/db";
 import { deletePrefix } from "@/lib/storage";
 import { purgeSiteStorage } from "@/lib/createSite";
 import { sendEmail, expiryEmail } from "@/lib/email";
@@ -7,6 +7,7 @@ import { track } from "@/lib/events";
 import { TRASH_DAYS } from "@/lib/plan";
 import { sweepRateLimitBuckets } from "@/lib/rateLimit";
 import { sweepIdempotencyKeys } from "@/lib/idempotency";
+import { transitionDeployment } from "@/lib/deployments";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,12 +74,18 @@ async function runCleanup(req: Request) {
     await track("site_trashed", { siteId: site.id, meta: { by: "cron", reason: "expired" } });
   }
 
-  // Phase 2 — purge storage for sites past the trash window.
+  // Phase 2 — purge storage for sites past the trash window. Unclaimed
+  // guest-trial sites (CD-18/CD-19) are the one exception to the grace
+  // period: no owner ever confirmed they want the content kept around, so
+  // they purge as soon as they're trashed rather than waiting TRASH_DAYS —
+  // an explicit tightening, not an oversight (see CLAUDE.md's Agent Gateway
+  // risk notes).
   const purgeable = await query<SiteRow>(
-    `SELECT * FROM sites
-      WHERE deleted_at IS NOT NULL
-        AND purged_at IS NULL
-        AND deleted_at <= now() - make_interval(days => $1)`,
+    `SELECT s.* FROM sites s
+       LEFT JOIN guest_sites g ON g.site_id = s.id AND g.claimed_by IS NULL
+      WHERE s.deleted_at IS NOT NULL
+        AND s.purged_at IS NULL
+        AND (s.deleted_at <= now() - make_interval(days => $1) OR g.trial_id IS NOT NULL)`,
     [TRASH_DAYS],
   );
 
@@ -130,6 +137,51 @@ async function runCleanup(req: Request) {
   const rateLimitBucketsSwept = await sweepRateLimitBuckets();
   const idempotencyKeysSwept = await sweepIdempotencyKeys();
 
+  // Phase 5 — PRD v2.0 R2 (CD-19): approvals sweep, orphaned preview
+  // deployments. Unclaimed-guest-site purging is folded into phase 2 above
+  // (same purgeSiteStorage/site-row lifecycle, just a different eligibility
+  // condition) rather than duplicated here.
+  const approvalsExpired = await query<{ id: string }>(
+    `UPDATE approvals SET status = 'expired'
+      WHERE status = 'pending' AND expires_at <= now()
+      RETURNING id`,
+  );
+  for (const a of approvalsExpired) {
+    await track("approval_expired", { meta: { approvalId: a.id } });
+  }
+  const approvalsDeleted = await query<{ id: string }>(
+    `DELETE FROM approvals
+      WHERE status IN ('approved','rejected','expired') AND created_at <= now() - interval '30 days'
+      RETURNING id`,
+  );
+
+  // Orphaned preview deployments: never promoted/canceled, older than the
+  // same TRASH_DAYS window used for trashed-site storage. Deployment rows
+  // themselves are never deleted (audit-trail-forever, matching every other
+  // history table in this app) — only their storage is freed and their
+  // status moves to 'canceled', a legal transition from all three states.
+  const orphanedDeployments = await query<DeploymentRow>(
+    `SELECT * FROM deployments
+      WHERE status IN ('queued','building','ready')
+        AND created_at <= now() - make_interval(days => $1)`,
+    [TRASH_DAYS],
+  );
+  let previewsCleaned = 0;
+  for (const d of orphanedDeployments) {
+    try {
+      const versionRows = await query<VersionRow>("SELECT * FROM versions WHERE id = $1", [
+        d.version_id,
+      ]);
+      if (versionRows[0]) {
+        await deletePrefix(versionRows[0].storage_key);
+      }
+      await transitionDeployment(d.id, "canceled");
+      previewsCleaned++;
+    } catch (err) {
+      console.error(`[cleanup] orphaned deployment cleanup failed for ${d.id}`, err);
+    }
+  }
+
   return NextResponse.json({
     notices,
     trashed: trashed.length,
@@ -140,6 +192,9 @@ async function runCleanup(req: Request) {
       oauthRequestsExpired: staleOAuthRequests.length,
       rateLimitBucketsSwept,
       idempotencyKeysSwept,
+      approvalsExpired: approvalsExpired.length,
+      approvalsDeleted: approvalsDeleted.length,
+      previewsCleaned,
     },
   });
 }

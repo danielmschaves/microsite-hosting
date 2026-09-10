@@ -32,6 +32,11 @@ arguments on every publish** — nothing here defaults to public-forever. Always
 6. **`delete_site` and `rollback_to_version` are destructive.** Don't call them speculatively.
    `rollback_to_version` publishes immediately with no preview step by design — treat it as
    equivalent in weight to `publish_site`.
+7. **If `publish_site`/`rollback_to_version` returns `{error:"approval_required"}`,** the
+   workspace requires a human decision — call `request_publish` with the same target
+   (`deploymentId` or `targetVersion`) instead of retrying the publish call, then poll
+   `get_approval_status` (or tell the human where to look: `/teams/<id>/approvals`). Don't loop on
+   `publish_site` expecting it to eventually succeed in this mode — it never will.
 
 ## After a successful `create_site_from_html`
 
@@ -46,9 +51,10 @@ team wants to share the association — MicroBuild doesn't require it to be comm
 
 ## Tool reference
 
-All 14 tools are documented via MCP tool descriptions (`list_projects`, `list_sites`,
+All 18 tools are documented via MCP tool descriptions (`list_projects`, `list_sites`,
 `get_site_context`, `create_site_from_html`, `apply_site_patch`, `create_preview`,
-`get_preview_status`, `delete_preview`, `publish_site`, `list_site_versions`,
-`rollback_to_version`, `set_site_visibility`, `set_site_expiry`, `delete_site`) — read a tool's
-own description before calling it for parameter details; this file only covers workflow judgment
-calls the tool descriptions can't express on their own.
+`get_preview_status`, `delete_preview`, `set_preview_access`, `publish_site`, `list_site_versions`,
+`rollback_to_version`, `request_publish`, `get_approval_status`, `set_site_visibility`,
+`set_site_expiry`, `delete_site`, `claim_trial_site`) — read a tool's own description before
+calling it for parameter details; this file only covers workflow judgment calls the tool
+descriptions can't express on their own.

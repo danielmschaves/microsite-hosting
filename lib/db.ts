@@ -55,6 +55,8 @@ export async function withTransaction<T>(
   }
 }
 
+export type PublishMode = "direct" | "confirm" | "approval";
+
 export interface WorkspaceRow {
   id: string;
   name: string;
@@ -65,6 +67,7 @@ export interface WorkspaceRow {
   stripe_subscription_id: string | null;
   subscription_status: string | null;
   seats: number;
+  publish_mode: PublishMode;
   created_at: Date;
 }
 
@@ -209,6 +212,42 @@ export interface AgentOAuthRequestRow {
   issued_token_id: string | null;
   created_at: Date;
   expires_at: Date;
+}
+
+// Agent Gateway (PRD v2.0, R2) -----------------------------------------------
+
+export type ApprovalAction = "publish" | "rollback";
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
+
+export interface ApprovalRow {
+  id: string;
+  workspace_id: string;
+  site_id: string;
+  action: ApprovalAction;
+  deployment_id: string | null;
+  target_version: number | null;
+  ttl_override: string | null;
+  requested_by: string;
+  agent_client_id: string | null;
+  message: string | null;
+  status: ApprovalStatus;
+  resulting_version: number | null;
+  expires_at: Date;
+  decided_by: string | null;
+  decided_at: Date | null;
+  decision_note: string | null;
+  created_at: Date;
+}
+
+export interface GuestSiteRow {
+  trial_id: string;
+  guest_token_hash: string;
+  site_id: string;
+  ip_hash: string | null;
+  expires_at: Date;
+  claimed_by: string | null;
+  claimed_at: Date | null;
+  created_at: Date;
 }
 
 // Idempotent schema creation. Runs on server startup (see instrumentation.ts)
@@ -502,6 +541,69 @@ CREATE INDEX IF NOT EXISTS cas_refs_digest_idx ON cas_refs (digest);
 -- existing soft-typed \`type\` column (enforced in TS via a union, not SQL) —
 -- so this ALTER stays safely re-runnable if the union ever grows.
 ALTER TABLE events ADD COLUMN IF NOT EXISTS actor_type TEXT NOT NULL DEFAULT 'human';
+
+-- Agent Gateway (PRD v2.0 R2): publish gate + approvals ---------------------
+-- Workspace-level policy for agent-driven publishes/rollbacks. 'direct' = no
+-- gate; 'confirm' = the existing two-step HMAC-token flow (lib/agentConfirm.ts);
+-- 'approval' = a human must decide (agents cannot self-approve regardless of
+-- scope). Default 'confirm' per the PRD.
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS publish_mode TEXT NOT NULL DEFAULT 'confirm';
+
+-- One row per pending/decided publish or rollback awaiting a human decision.
+-- 'publish' actions reference a ready preview deployment being promoted;
+-- 'rollback' actions reference a target_version instead. Requiring a
+-- concrete deployment/version (never "republish nothing changed") keeps the
+-- reviewer's summary meaningful and doubles as a hard version of the R1
+-- Skill's soft "preview before publish" guidance for approval-gated
+-- workspaces. resulting_version is set only on approve, so
+-- get_approval_status/audit can show "what actually went live" without
+-- re-deriving it.
+CREATE TABLE IF NOT EXISTS approvals (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id       UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  site_id            UUID NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  action             TEXT NOT NULL DEFAULT 'publish' CHECK (action IN ('publish','rollback')),
+  deployment_id      UUID REFERENCES deployments(id), -- 'publish': the preview being promoted
+  target_version     INTEGER,                          -- 'rollback': the version to revert to
+  ttl_override       TEXT,
+  requested_by       TEXT NOT NULL,
+  agent_client_id    UUID REFERENCES agent_clients(id),
+  message            TEXT,
+  status             TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending','approved','rejected','expired')),
+  resulting_version  INTEGER,
+  expires_at         TIMESTAMPTZ NOT NULL,
+  decided_by         TEXT,
+  decided_at         TIMESTAMPTZ,
+  decision_note      TEXT,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT approvals_action_target_chk CHECK (
+    (action = 'publish'  AND target_version IS NULL) OR
+    (action = 'rollback' AND deployment_id IS NULL AND target_version IS NOT NULL)
+  )
+);
+CREATE INDEX IF NOT EXISTS approvals_workspace_idx ON approvals (workspace_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS approvals_sweep_idx ON approvals (expires_at) WHERE status = 'pending';
+
+-- Agent Gateway (PRD v2.0 R2): guest (no-signup) publish ---------------------
+-- One row per anonymous trial site. guest_token_hash is a sha256 of the
+-- opaque token held in the visitor's mb_guest_token cookie (same
+-- hash-and-lookup pattern as every other credential in this codebase — no
+-- stored secret to leak). Claiming does not delete this row; it's the
+-- permanent record of "this site started as a guest trial." UNIQUE(site_id)
+-- because a site has at most one guest-trial origin.
+CREATE TABLE IF NOT EXISTS guest_sites (
+  trial_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  guest_token_hash  TEXT NOT NULL,
+  site_id           UUID NOT NULL UNIQUE REFERENCES sites(id) ON DELETE CASCADE,
+  ip_hash           TEXT,
+  expires_at        TIMESTAMPTZ NOT NULL,
+  claimed_by        TEXT,
+  claimed_at        TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS guest_sites_token_idx ON guest_sites (guest_token_hash);
+CREATE INDEX IF NOT EXISTS guest_sites_unclaimed_idx ON guest_sites (expires_at) WHERE claimed_by IS NULL;
 `;
 
 export async function migrate(): Promise<void> {

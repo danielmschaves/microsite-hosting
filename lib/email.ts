@@ -88,6 +88,28 @@ export function expiryEmail(opts: {
   };
 }
 
+/** Agent Gateway (PRD v2.0 R2): notify an admin that an agent is requesting
+ * publish/rollback approval on a workspace with publish_mode='approval'. */
+export function approvalRequestedEmail(opts: {
+  slug: string;
+  action: "publish" | "rollback";
+  requestedBy: string;
+  approvalUrl: string;
+}): Omit<EmailMessage, "to"> {
+  const { slug, action, requestedBy, approvalUrl } = opts;
+  return {
+    subject: `Approval requested: ${action} "${slug}" on MicroBuild`,
+    text: `${requestedBy}'s agent is requesting approval to ${action} "${slug}".\n\nReview and decide:\n${approvalUrl}\n\nThis request expires in 72 hours.`,
+    html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;padding:24px">
+  <h2 style="margin:0 0 12px">Approval requested for ${escapeHtml(slug)}</h2>
+  <p style="color:#555;line-height:1.5"><strong>${escapeHtml(requestedBy)}</strong>'s agent is requesting approval to
+  <strong>${action}</strong> "${escapeHtml(slug)}".</p>
+  <p style="margin:24px 0"><a href="${approvalUrl}" style="background:#5b4dff;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600">Review request</a></p>
+  <p style="color:#999;font-size:13px">This request expires in 72 hours.</p>
+</div>`,
+  };
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
