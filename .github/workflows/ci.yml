@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel a still-running check for the same branch/PR when a new push lands —
+# stacked-PR workflows especially tend to push several times in a row, and a
+# superseded run just burns minutes without anyone waiting on its result.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -27,6 +34,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Workspace package with its own tsc build (see CLAUDE.md's Commands
+      # section) — the root `Build` step above does not touch it, so a break
+      # here would otherwise only surface when someone runs this by hand.
+      - name: Build @microbuild/mcp
+        run: npm run build --workspace packages/mcp-server
+
       # `--if-present` is deliberate: this repo does not have a `test`
       # script yet. Once one is added, this step starts running it
       # automatically — no workflow edit required.
@@ -34,8 +47,20 @@ jobs:
         run: npm test --if-present
 
       # CD-15 added argon2 (a native/compiled dependency, the first in this
-      # repo) — ubuntu-latest above is glibc, so it can't catch an
-      # Alpine/musl-specific native-module build failure. This step runs the
-      # actual production image build to close that gap.
+      # repo) — the runner above is glibc, so it can't catch an
+      # Alpine/musl-specific native-module build failure on its own; this
+      # step runs the actual production image build to close that gap.
+      # Buildx + the GitHub Actions cache backend mean the argon2
+      # from-source compile (and every other layer) only pays its cost once
+      # per Dockerfile/lockfile change, not on every push.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Docker build
-        run: docker build -t microbuild-ci-check .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: microbuild-ci-check:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
