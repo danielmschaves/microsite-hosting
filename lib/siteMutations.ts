@@ -1,9 +1,10 @@
-import { query, type SiteRow, type WorkspaceRow } from "./db";
+import { query, withTransaction, type SiteRow, type SiteVersionRow, type WorkspaceRow } from "./db";
 import { expiresAtFrom, isTtlPreset } from "./ttl";
 import { normalizeSlug } from "./slug";
 import { isVisibility } from "./authz";
 import { planForWorkspace, allowedTtlPresets } from "./plan";
 import { track } from "./events";
+import { createDeployment, transitionDeployment } from "./deployments";
 
 // Owner-scoped site mutations shared by the session route
 // (PATCH /api/sites/[id]) and the token API (PATCH /api/v1/sites/[slug]).
@@ -139,4 +140,98 @@ export async function extendTtl(
     meta: { ttl, ...meta },
   });
   return { status: 200, body: { ok: true, expiresAt: expiresAt.toISOString() } };
+}
+
+/**
+ * Instant rollback: flip the sites row to an older version's prefix/index.
+ * No bytes move — pruning never deletes the live prefix, so the target
+ * version's files are still in storage. Shared by the human rollback route
+ * and the agent `rollback_to_version` tool.
+ *
+ * Wrapped in withTransaction + SELECT...FOR UPDATE (unlike the bare UPDATE
+ * this replaced) so a rollback racing a concurrent publish/rollback can't
+ * interleave — agents can call this far more often than a human clicking a
+ * button, so the existing race is worth closing here while touching the code
+ * anyway (see CLAUDE.md's Agent Gateway risk notes).
+ */
+export async function rollbackToVersion(
+  site: SiteRow,
+  email: string,
+  version: number,
+  meta: Record<string, unknown> = {},
+): Promise<MutationResult> {
+  if (!Number.isInteger(version) || version < 1) {
+    return { status: 400, body: { error: "Provide a valid version number" } };
+  }
+  if (version === site.current_version) {
+    return { status: 400, body: { error: "Already the current version" } };
+  }
+
+  const result = await withTransaction(async (tx) => {
+    await tx("SELECT id FROM sites WHERE id = $1 FOR UPDATE", [site.id]);
+    const rows = await tx<SiteVersionRow>(
+      "SELECT * FROM site_versions WHERE site_id = $1 AND version = $2",
+      [site.id, version],
+    );
+    const target = rows[0];
+    if (!target) return null;
+
+    const updated = await tx<SiteRow>(
+      `UPDATE sites
+          SET s3_prefix = $1, index_key = $2, size_bytes = $3, page_count = $4,
+              current_version = $5
+        WHERE id = $6
+        RETURNING *`,
+      [
+        target.s3_prefix,
+        target.index_key,
+        target.size_bytes,
+        target.page_count,
+        target.version,
+        site.id,
+      ],
+    );
+    return updated[0];
+  });
+
+  if (!result) {
+    return { status: 404, body: { error: "Version not found (older versions are pruned)" } };
+  }
+
+  await track("site_rolled_back", {
+    siteId: site.id,
+    workspaceId: site.workspace_id ?? undefined,
+    actor: email,
+    meta: { from: site.current_version, to: version, ...meta },
+  });
+
+  // Audit-trail symmetry with the deployments model: record the rollback as
+  // its own versions/deployments entry. Best-effort — this never blocks the
+  // pointer flip above, which is already committed.
+  try {
+    const versionRow = await query<{ id: string }>(
+      "SELECT id FROM versions WHERE site_id = $1 AND number = $2",
+      [site.id, version],
+    );
+    if (versionRow[0]) {
+      const deployment = await createDeployment({
+        siteId: site.id,
+        versionId: versionRow[0].id,
+        target: "production",
+        createdBy: email,
+        actorType: (meta.actorType as "human" | "agent") ?? "human",
+      });
+      const building = await transitionDeployment(deployment.id, "building");
+      const ready = await transitionDeployment(building.id, "ready");
+      const published = await transitionDeployment(ready.id, "published");
+      await query("UPDATE sites SET production_deployment_id = $1 WHERE id = $2", [
+        published.id,
+        site.id,
+      ]);
+    }
+  } catch (err) {
+    console.error("[rollback] deployment bookkeeping failed", err);
+  }
+
+  return { status: 200, body: { ok: true, version } };
 }

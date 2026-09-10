@@ -72,6 +72,11 @@ services:
       STRIPE_TEAM_PRICE_ID: ${STRIPE_TEAM_PRICE_ID:-}
       # Treat every workspace as Team plan without Stripe (dev only; blocked in prod)
       PLAN_FAKE_TEAM: ${PLAN_FAKE_TEAM:-false}
+      # Agent Gateway (PRD v2.0 R0/R1) — off by default; flip to "true" locally
+      # to exercise the MCP server / OAuth flows against docker compose.
+      MICROBUILD_FLAG_AGENT_GATEWAY: ${MICROBUILD_FLAG_AGENT_GATEWAY:-false}
+      MICROBUILD_FLAG_AGENT_OAUTH: ${MICROBUILD_FLAG_AGENT_OAUTH:-false}
+      MICROBUILD_FLAG_AGENT_CONSOLE_UI: ${MICROBUILD_FLAG_AGENT_CONSOLE_UI:-false}
     ports:
       - "3000:3000"
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { query, withTransaction, type SiteRow, type WorkspaceRow } from "./db";
 import { deletePrefix } from "./storage";
+import { releaseCasRefs } from "./cas";
 import { generateSlug, normalizeSlug } from "./slug";
 import { expiresAtFrom, isTtlPreset, type TtlPreset } from "./ttl";
 import { getMembership } from "./teams";
@@ -451,24 +452,41 @@ export async function publishSiteVersion(opts: {
 
 /**
  * Delete ALL storage belonging to a site — the live prefix plus every
- * retained version prefix — and drop the version rows. The single purge
- * path used by cron phase 2, ?permanent=true deletes, and restores-gone-
- * wrong; keeping it centralized prevents orphaned version prefixes.
+ * retained version prefix (site_versions AND the Agent Gateway's versions
+ * table, including preview snapshots and, once CD-04 is wired into a
+ * publish path, content-addressed versions) — and drop the version rows.
+ * The single purge path used by cron phase 2, ?permanent=true deletes, and
+ * restores-gone-wrong; keeping it centralized prevents orphaned prefixes.
  */
 export async function purgeSiteStorage(site: {
   id: string;
   s3_prefix: string;
 }): Promise<void> {
-  const versions = await query<{ s3_prefix: string }>(
+  const oldVersions = await query<{ s3_prefix: string }>(
     "SELECT DISTINCT s3_prefix FROM site_versions WHERE site_id = $1",
     [site.id],
   );
-  const prefixes = new Set<string>([
+  const versions = await query<{ id: string; storage_key: string; content_digest: string | null }>(
+    "SELECT id, storage_key, content_digest FROM versions WHERE site_id = $1",
+    [site.id],
+  );
+
+  const prefixesToDelete = new Set<string>([
     site.s3_prefix,
-    ...versions.map((v) => v.s3_prefix),
+    ...oldVersions.map((v) => v.s3_prefix),
   ]);
-  for (const prefix of prefixes) {
+  for (const v of versions) {
+    if (v.content_digest) {
+      await releaseCasRefs(v.id);
+    } else {
+      prefixesToDelete.add(v.storage_key);
+    }
+  }
+
+  for (const prefix of prefixesToDelete) {
     await deletePrefix(prefix);
   }
+
   await query("DELETE FROM site_versions WHERE site_id = $1", [site.id]);
+  await query("DELETE FROM versions WHERE site_id = $1", [site.id]);
 }

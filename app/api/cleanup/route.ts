@@ -5,6 +5,8 @@ import { purgeSiteStorage } from "@/lib/createSite";
 import { sendEmail, expiryEmail } from "@/lib/email";
 import { track } from "@/lib/events";
 import { TRASH_DAYS } from "@/lib/plan";
+import { sweepRateLimitBuckets } from "@/lib/rateLimit";
+import { sweepIdempotencyKeys } from "@/lib/idempotency";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -113,12 +115,32 @@ async function runCleanup(req: Request) {
     "DELETE FROM pending_uploads WHERE completed_at IS NOT NULL AND completed_at <= now() - interval '7 days'",
   );
 
+  // Phase 4 — Agent Gateway (PRD v2.0): sweep stale OAuth requests (PKCE +
+  // device-code state that was never completed) and expired rate-limit /
+  // idempotency-key bookkeeping. Same shape as phase 3's orphaned-upload
+  // sweep — nothing here blocks product flows if it fails.
+  const staleOAuthRequests = await query<{ id: string }>(
+    `UPDATE agent_oauth_requests SET status = 'expired'
+      WHERE status = 'pending' AND expires_at <= now()
+      RETURNING id`,
+  );
+  await query(
+    "DELETE FROM agent_oauth_requests WHERE status IN ('expired','denied','consumed') AND expires_at <= now() - interval '7 days'",
+  );
+  const rateLimitBucketsSwept = await sweepRateLimitBuckets();
+  const idempotencyKeysSwept = await sweepIdempotencyKeys();
+
   return NextResponse.json({
     notices,
     trashed: trashed.length,
     purged: purgeResults.filter((r) => r.ok).length,
     orphansCleaned,
     purgeResults,
+    agentGateway: {
+      oauthRequestsExpired: staleOAuthRequests.length,
+      rateLimitBucketsSwept,
+      idempotencyKeysSwept,
+    },
   });
 }
 

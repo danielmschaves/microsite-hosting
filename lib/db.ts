@@ -87,6 +87,7 @@ export interface SiteRow {
   current_version: number;
   notified_48h_at: Date | null;
   notified_2h_at: Date | null;
+  production_deployment_id: string | null;
 }
 
 export interface SiteVersionRow {
@@ -110,6 +111,104 @@ export interface ApiTokenRow {
   created_at: Date;
   last_used_at: Date | null;
   revoked_at: Date | null;
+}
+
+// Agent Gateway (PRD v2.0, R0/R1) -------------------------------------------
+
+export type VersionSource = "upload" | "agent" | "github" | "template" | "rollback";
+export type ActorType = "human" | "agent";
+
+export interface VersionRow {
+  id: string;
+  site_id: string;
+  number: number;
+  storage_key: string;
+  content_digest: string | null;
+  source: VersionSource;
+  summary: string | null;
+  author_email: string;
+  actor_type: ActorType;
+  created_at: Date;
+}
+
+export type DeploymentTarget = "preview" | "production";
+export type DeploymentStatus =
+  | "queued"
+  | "building"
+  | "ready"
+  | "published"
+  | "failed"
+  | "canceled";
+export type DeploymentAccessMode = "password" | "organization" | "hybrid" | "inherit";
+
+export interface DeploymentRow {
+  id: string;
+  site_id: string;
+  version_id: string;
+  changeset_id: string | null;
+  target: DeploymentTarget;
+  status: DeploymentStatus;
+  url: string | null;
+  access_mode: DeploymentAccessMode;
+  access_password_hash: string | null;
+  created_by: string;
+  actor_type: ActorType;
+  agent_client_id: string | null;
+  build_started_at: Date | null;
+  build_finished_at: Date | null;
+  error: Record<string, unknown> | null;
+  published_at: Date | null;
+  created_at: Date;
+}
+
+export type AgentClientKind = "claude-code" | "codex" | "cursor" | "other";
+
+export interface AgentClientRow {
+  id: string;
+  workspace_id: string;
+  name: string;
+  kind: AgentClientKind;
+  first_seen_at: Date;
+  last_seen_at: Date | null;
+}
+
+export interface AgentTokenRow {
+  id: string;
+  workspace_id: string;
+  agent_client_id: string;
+  token_hash: string;
+  token_prefix: string;
+  scopes: string[];
+  granted_by: string;
+  expires_at: Date;
+  last_used_at: Date | null;
+  revoked_at: Date | null;
+  created_at: Date;
+}
+
+export type OAuthFlow = "auth_code" | "device_code";
+export type OAuthRequestStatus = "pending" | "authorized" | "denied" | "expired" | "consumed";
+
+export interface AgentOAuthRequestRow {
+  id: string;
+  flow: OAuthFlow;
+  status: OAuthRequestStatus;
+  client_name: string;
+  client_kind: string;
+  requested_scopes: string[];
+  workspace_id: string | null;
+  code_challenge: string | null;
+  code_challenge_method: string | null;
+  redirect_uri: string | null;
+  state: string | null;
+  device_code: string | null;
+  user_code: string | null;
+  auth_code: string | null;
+  authorized_by: string | null;
+  agent_client_id: string | null;
+  issued_token_id: string | null;
+  created_at: Date;
+  expires_at: Date;
 }
 
 // Idempotent schema creation. Runs on server startup (see instrumentation.ts)
@@ -253,6 +352,156 @@ CREATE INDEX IF NOT EXISTS api_tokens_owner_idx ON api_tokens (owner_email);
 -- extended or the site is restored.
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS notified_48h_at TIMESTAMPTZ;
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS notified_2h_at TIMESTAMPTZ;
+
+-- Agent Gateway (PRD v2.0 R0): deployment/version model ---------------------
+-- \`versions\` is 1:1 backfilled from \`site_versions\` (kept, untouched — see
+-- lib/backfillDeployments.ts). content_digest stays NULL until CD-04 computes
+-- it; NULL is a permanently valid state for legacy prefix-addressed versions.
+CREATE TABLE IF NOT EXISTS versions (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  site_id        UUID NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  number         INTEGER NOT NULL,
+  storage_key    TEXT NOT NULL,
+  content_digest TEXT,
+  source         TEXT NOT NULL DEFAULT 'upload'
+                   CHECK (source IN ('upload','agent','github','template','rollback')),
+  summary        TEXT,
+  author_email   TEXT NOT NULL,
+  actor_type     TEXT NOT NULL DEFAULT 'human' CHECK (actor_type IN ('human','agent')),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (site_id, number)
+);
+CREATE INDEX IF NOT EXISTS versions_site_idx ON versions (site_id, number DESC);
+
+-- Referenced by deployments.agent_client_id below, so it must exist first.
+CREATE TABLE IF NOT EXISTS agent_clients (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id   UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  name           TEXT NOT NULL,
+  kind           TEXT NOT NULL DEFAULT 'other'
+                   CHECK (kind IN ('claude-code','codex','cursor','other')),
+  first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS agent_clients_workspace_idx ON agent_clients (workspace_id);
+
+-- New addressable unit the deployment state machine (lib/deployments.ts)
+-- owns. Never drives serving in R0/R1 — sites.s3_prefix/current_version stays
+-- the source of truth for /s/[slug] until a later release flips a flag.
+CREATE TABLE IF NOT EXISTS deployments (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  site_id               UUID NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  version_id            UUID NOT NULL REFERENCES versions(id),
+  changeset_id          UUID, -- unused until a later release; soft reference, no FK yet
+  target                TEXT NOT NULL CHECK (target IN ('preview','production')),
+  status                TEXT NOT NULL DEFAULT 'queued'
+                          CHECK (status IN ('queued','building','ready','published','failed','canceled')),
+  url                   TEXT,
+  access_mode           TEXT NOT NULL DEFAULT 'inherit'
+                          CHECK (access_mode IN ('password','organization','hybrid','inherit')),
+  access_password_hash  TEXT,
+  created_by            TEXT NOT NULL,
+  actor_type            TEXT NOT NULL DEFAULT 'human' CHECK (actor_type IN ('human','agent')),
+  agent_client_id       UUID REFERENCES agent_clients(id),
+  build_started_at      TIMESTAMPTZ,
+  build_finished_at     TIMESTAMPTZ,
+  error                 JSONB,
+  published_at          TIMESTAMPTZ,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS deployments_site_idx ON deployments (site_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS deployments_status_idx ON deployments (status) WHERE status IN ('queued','building');
+
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS production_deployment_id UUID REFERENCES deployments(id);
+
+-- Agent Gateway (R1): OAuth tokens, PKCE/device-code state -------------------
+-- Supersedes api_tokens for agent use only; api_tokens itself is untouched
+-- and stays session-managed/full-account (a separate release retires it).
+CREATE TABLE IF NOT EXISTS agent_tokens (
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id     UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  agent_client_id  UUID NOT NULL REFERENCES agent_clients(id) ON DELETE CASCADE,
+  token_hash       TEXT NOT NULL UNIQUE,
+  token_prefix     TEXT NOT NULL,
+  scopes           TEXT[] NOT NULL DEFAULT '{}',
+  granted_by       TEXT NOT NULL, -- session email of the human who approved consent
+  expires_at       TIMESTAMPTZ NOT NULL, -- 90-day max enforced at mint time
+  last_used_at     TIMESTAMPTZ,
+  revoked_at       TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_tokens_workspace_idx ON agent_tokens (workspace_id) WHERE revoked_at IS NULL;
+
+-- OAuth 2.1 auth-code+PKCE and device-code state, one table for both flows
+-- (a \`flow\` discriminator) so one cleanup-cron sweep handles both. Needs a
+-- real status enum — pending_uploads' NULL-until-done shape only models two
+-- states, not enough here.
+CREATE TABLE IF NOT EXISTS agent_oauth_requests (
+  id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  flow                   TEXT NOT NULL CHECK (flow IN ('auth_code','device_code')),
+  status                 TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending','authorized','denied','expired','consumed')),
+  client_name            TEXT NOT NULL,
+  client_kind            TEXT NOT NULL DEFAULT 'other',
+  requested_scopes       TEXT[] NOT NULL,
+  workspace_id           UUID REFERENCES workspaces(id),
+  code_challenge         TEXT,
+  code_challenge_method  TEXT DEFAULT 'S256',
+  redirect_uri           TEXT, -- auth_code flow: loopback URI to redirect back to with ?code=
+  state                  TEXT, -- auth_code flow: opaque CSRF token echoed back to the client
+  device_code            TEXT UNIQUE,
+  user_code              TEXT UNIQUE,
+  auth_code              TEXT UNIQUE,
+  authorized_by          TEXT,
+  agent_client_id        UUID REFERENCES agent_clients(id),
+  issued_token_id        UUID REFERENCES agent_tokens(id),
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at             TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agent_oauth_requests_device_idx ON agent_oauth_requests (device_code) WHERE device_code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS agent_oauth_requests_sweep_idx ON agent_oauth_requests (expires_at) WHERE status = 'pending';
+
+-- Idempotency + rate limiting (CD-12), Postgres-backed per the no-Redis /
+-- zero-cloud-dependency portability constraint (docker compose up must work).
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  key              TEXT PRIMARY KEY,
+  token_id         UUID NOT NULL,
+  request_hash     TEXT NOT NULL,
+  response_status  INTEGER NOT NULL,
+  response_body    JSONB NOT NULL,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idempotency_keys_sweep_idx ON idempotency_keys (created_at);
+
+CREATE TABLE IF NOT EXISTS rate_limit_buckets (
+  bucket_key    TEXT NOT NULL,
+  window_start  TIMESTAMPTZ NOT NULL,
+  count         INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (bucket_key, window_start)
+);
+
+-- Feature flags (CD-05): env override always wins; this table is the
+-- per-workspace / global fallback. See lib/flags.ts.
+CREATE TABLE IF NOT EXISTS feature_flags (
+  name                TEXT PRIMARY KEY,
+  enabled_globally    BOOLEAN NOT NULL DEFAULT false,
+  enabled_workspaces  UUID[] NOT NULL DEFAULT '{}',
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Content-addressed storage (CD-04): refcounts for shared cas/<digest>
+-- objects. A digest is safe to delete once no version references it.
+CREATE TABLE IF NOT EXISTS cas_refs (
+  digest      TEXT NOT NULL,
+  version_id  UUID NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
+  PRIMARY KEY (digest, version_id)
+);
+CREATE INDEX IF NOT EXISTS cas_refs_digest_idx ON cas_refs (digest);
+
+-- Actor-type on events (agent vs human). No CHECK constraint — matches the
+-- existing soft-typed \`type\` column (enforced in TS via a union, not SQL) —
+-- so this ALTER stays safely re-runnable if the union ever grows.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS actor_type TEXT NOT NULL DEFAULT 'human';
 `;
 
 export async function migrate(): Promise<void> {

@@ -12,6 +12,7 @@ import {
 } from "@/lib/plan";
 import { AppBar } from "@/components/AppBar";
 import { TeamPanel } from "@/components/TeamPanel";
+import { isFlagEnabled } from "@/lib/flags";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,8 @@ export default async function TeamPage({
 
   const myRole = await getMembership(email, id);
   if (!myRole) notFound();
+
+  const agentGatewayEnabled = await isFlagEnabled("agent_console_ui", id);
 
   const members = await query<{ email: string; role: string; joined_at: Date }>(
     `SELECT email, role, joined_at FROM workspace_members
@@ -153,6 +156,7 @@ export default async function TeamPage({
           fakeTeam,
           minSeats: MIN_TEAM_SEATS,
         }}
+        agentGatewayEnabled={agentGatewayEnabled}
       />
     </>
   );

@@ -1,0 +1,26 @@
+{
+  "name": "@microbuild/mcp",
+  "version": "0.1.0",
+  "description": "MCP server for MicroBuild — publish, preview and manage sites from an agent, with visibility and TTL as first-class arguments on every call.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "microbuild-mcp": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.9.0",
+    "zod": "3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.3"
+  }
+}

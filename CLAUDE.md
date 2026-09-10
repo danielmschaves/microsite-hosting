@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Built and deployed: the MVP (PRD §8) plus the v1.0 feature set (teams/workspaces, billing, multi-page sites, presigned uploads, trash, versioning, token API, public links, expiry notifications). The full specification is in `PRD.md`; the sections below describe what exists in the codebase.
 
+**In progress, behind flags (PRD v2.0 — R0 Foundation + R1 Agent Gateway):** an MCP server, OAuth 2.1 for agents, and a scoped agent-token model sit alongside the v1.0 product with **zero user-visible change** while the corresponding `MICROBUILD_FLAG_*` env vars are unset. See "Agent Gateway (PRD v2.0)" below. `PRD-v2.md` (if present) has the full seven-release plan; only R0+R1 are implemented so far.
+
 ## Build Goal (PRD §8.5)
 
 > Build a Next.js app ("Shipsite MVP") that lets an authenticated user upload a single HTML file, stores it in S3-compatible storage, serves it at `/s/{slug}` only to logged-in allowed users, and deletes it after its TTL. Include docker-compose (app + Postgres + MinIO), Auth.js with Google/GitHub, a cron-callable cleanup endpoint, and a minimal dashboard. All external services configurable via env vars.
@@ -27,9 +29,10 @@ Built and deployed: the MVP (PRD §8) plus the v1.0 feature set (teams/workspace
 ```bash
 docker compose up          # Full local stack: app + Postgres + MinIO
 npm run dev                # Next.js dev server (needs env vars set)
-npm run build              # Production build
-npm run lint               # ESLint
-npm test                   # Test suite
+npm run build               # Production build
+npm run lint                # ESLint
+npm test                    # Vitest — currently covers lib/deploymentStateMachine.ts's transition table
+npm run build --workspace packages/mcp-server   # Build the @microbuild/mcp package
 ```
 
 ## Critical Architectural Constraints
@@ -73,6 +76,15 @@ API / handlers:
 - `/api/invites/[token]` — POST accept (session email must equal invited email)
 - `/api/stripe/webhook` — signature-verified; `lib/billing.ts` `syncSubscriptionToWorkspace` is the SOLE writer of plan/seats/status
 
+Agent Gateway (PRD v2.0 R0/R1 — all behind flags, see below):
+- `/oauth/consent`, `/oauth/device` — human-facing OAuth consent + device-code verification pages
+- `/teams/[id]/agents` — Agent Console (admin-only): connected clients, tokens + scope chips, revoke, 24h activity feed
+- `/s/[slug]/preview/[deploymentId]/[[...path]]` — preview-deployment serving; gated on the *site's* `canViewSite` plus `deployments.status='ready' AND target='preview'`; never touches the live `sites` pointer
+- `/api/oauth/authorize`, `/api/oauth/consent`, `/api/oauth/token`, `/api/oauth/device` — OAuth 2.1 auth-code+PKCE and device-code flows; state in `agent_oauth_requests`
+- `/api/agent/projects`, `/api/agent/sites[...]`, `/api/agent/previews/[id]` — the 14 R1 MCP tools' REST surface, Bearer `agent_tokens` auth via `lib/agentAuthz.ts` `requireAgentScope`, workspace-scoped (never owner-email scoped like `/api/v1`)
+- `/api/agent-tokens/[id]`, `/api/agent-activity` — session-authenticated Agent Console CRUD/feed
+- `/api/admin/backfill-deployments` — `CRON_SECRET`-authed, one-time-but-idempotent backfill of `versions`/`deployments` from `site_versions`/`sites` + a read-only addressing-parity verifier (`lib/backfillDeployments.ts`)
+
 ## Authorization & plans
 
 - All site access decisions live in `lib/authz.ts` (`canViewSite`, `authorizeSiteManage`); workspace role guards in `lib/teams.ts` (`requireWorkspaceRole`). Never inline auth checks in routes.
@@ -94,17 +106,69 @@ Ported from the "MicroBuild" Claude Design project. Do not hand-edit tokens ad h
 - `site_versions` — per-publish history (site_id, version, s3_prefix, index_key, sizes). The `sites` row is the live pointer; each version keeps its own S3 prefix, so rollback is a pointer flip and pruning (plan `versionLimit`: free 1 / team 5) never touches the live prefix. All storage deletion goes through `purgeSiteStorage` in `lib/createSite.ts`
 - `api_tokens` — owner_email, name, token_hash (sha256, unique), token_prefix, last_used_at, revoked_at
 - `site_viewers` — site_id, viewer_email (the allowlist)
-- `events` — first-party analytics (type, site_id, actor, meta jsonb); captured server-side via `lib/events.ts` `track()`; no third-party SDK
+- `events` — first-party analytics (type, site_id, actor, meta jsonb, actor_type `human|agent`); captured server-side via `lib/events.ts` `track()`; no third-party SDK
 
 Lifecycle: live (`deleted_at IS NULL`, unexpired) → trash (`deleted_at` set, storage kept, restorable) → purged (`purged_at` set after `TRASH_DAYS`). Serving requires live. The S3 prefix embeds a timestamp so trashed sites never collide with a new site reusing the slug.
 
 Auth uses JWT sessions (no DB adapter), so there is no `users` table — the allowlist is matched against the session email.
 
+**Agent Gateway tables (PRD v2.0 R0/R1, additive only — see "Agent Gateway" below):** `versions`/`deployments` (new deployment-model bookkeeping layered on top of `sites`/`site_versions`, which remain the source of truth for serving), `agent_clients`/`agent_tokens` (workspace-scoped, scoped OAuth tokens — distinct from the owner-scoped, full-account `api_tokens`), `agent_oauth_requests` (short-lived PKCE/device-code state), `idempotency_keys`/`rate_limit_buckets` (Postgres-backed, no Redis), `feature_flags`, `cas_refs` (content-addressed storage refcounts, unused until a publish path is wired to `lib/cas.ts`).
+
+## Agent Gateway (PRD v2.0 — R0 Foundation + R1 Agent Gateway)
+
+Lets an AI agent (Claude Code, Codex, Cursor) go from "I have an HTML file" to a private, expiring
+URL via MCP tools instead of the human dashboard — with `visibility` and `ttl` as *required*
+arguments on the publishing tool, MicroBuild's actual differentiator. Ships entirely behind
+feature flags (`lib/flags.ts`) so v1.0 behavior is byte-for-byte unchanged while they're off.
+
+**Feature flags** (env override always wins — `MICROBUILD_FLAG_<NAME>=true|false` — else the
+`feature_flags` table's `enabled_globally`/`enabled_workspaces`; missing row = disabled):
+- `agent_gateway` — master switch for every `/api/agent/**` and `/api/oauth/**` route; **404s**
+  (not 403) when off, matching `requireWorkspaceRole`'s "hide existence from non-members" policy.
+- `agent_oauth` — narrower switch just for the OAuth endpoints, so that plumbing can be
+  smoke-tested before the MCP server/tools are wired to it.
+- `agent_console_ui` — gates whether `/teams/[id]/agents` renders/404s and whether `TeamPanel.tsx`
+  links to it.
+
+**Data model / auth model:** `sites.production_deployment_id` points at a synthetic `deployments`
+row backfilled by `lib/backfillDeployments.ts` for every live site — additive only, `sites`/
+`site_versions`/`api_tokens` are untouched and remain what actually serves `/s/[slug]`. Agent
+tokens (`mb_agent_` prefix, `lib/agentTokens.ts`, sha256-hashed like `api_tokens`) are bound to a
+**workspace**, not an owner email, and carry a scope array (`lib/agentAuthz.ts` `AgentScope`, 14
+scopes mirroring Showly's model — only 8 are enforced by any R1 tool today, see
+`R1_ENFORCED_SCOPES`). Every `/api/agent/**` route checks `sites.workspace_id =
+agent_tokens.workspace_id` directly — it deliberately does **not** reuse `/api/v1`'s
+owner-email-only `ownedSite()` helper. `lib/deployments.ts`'s state machine
+(`queued→building→ready→published|failed|canceled`) is additive bookkeeping on top of
+`publishSiteVersion` — it does not replace it; a later release flips serving to read from
+`deployments` instead of `sites.s3_prefix`.
+
+**Packages:** `packages/mcp-server` (`@microbuild/mcp`, npm workspace) — stdio MCP server, `npx
+@microbuild/mcp install --to claude-code|codex|cursor` writes client config and runs the
+device-code auth flow; `packages/skill` (`@microbuild/skill`) — `SKILL.md` workflow guidance
+(always pass explicit visibility/ttl, preview before publish).
+
+**Two-step confirmation:** `publish_site`, `rollback_to_version`, `delete_site` each return an
+HMAC-signed `confirmToken` (keyed on `AUTH_SECRET`, `lib/agentConfirm.ts`, 5-minute expiry) on a
+first call and require it on the second. `publish_site`/`rollback_to_version` also require an
+`Idempotency-Key` header (`lib/idempotency.ts`, replay window 24h, Postgres-backed); rate limits
+are enforced per-token in `requireAgentScope` (`lib/rateLimit.ts`: 120 reads/min, 20 writes/min, 5
+publishes/min).
+
 ## Scope
 
 **Shipped (MVP + v1.0):** multi-page `.html` upload (multipart + presigned), login-walled viewing (Google/GitHub), per-site allowlists, public link mode, TTL presets + notifications (T-48h/T-2h email + bell), trash/restore/purge via cron, versioning + rollback, teams/workspaces with roles/invites/audit/billing (Stripe), max-TTL policy, token REST API, dashboard/trash/plans/api-cli pages.
 
-**Still out (v1.1+):** dedicated CLI package (`@microbuild/cli` — the API exists), custom SSO (SAML/OIDC, M3), subdomain-per-site, rate limiting on the v1 API, anonymous-view event retention sweep.
+**Built, behind flags (PRD v2.0 R0+R1):** MCP server + 14 agent tools, OAuth 2.1 (auth-code+PKCE +
+device-code) for agents, scoped `agent_tokens`, preview deployments, deployment state machine,
+Agent Console UI, Postgres-backed rate limiting/idempotency, content-addressed storage primitives
+(`lib/cas.ts`, not yet wired into any publish path). See "Agent Gateway" above.
+
+**Still out (v1.1+ / PRD v2.0 R2+):** dedicated CLI package (`@microbuild/cli` — the human-facing
+v1 API already exists; `@microbuild/mcp` is the agent-facing one), custom SSO (SAML/OIDC, M3),
+subdomain-per-site, rate limiting on the v1 API (the *agent* API is rate-limited; v1 is not),
+anonymous-view event retention sweep, publish approval workflow, custom domains, version diffs,
+build pipeline, guest/no-signup publish.
 
 ## Environment Variables (core ones required; see DEPLOY.md for optional Resend/Stripe/presign vars)
 
@@ -128,4 +192,11 @@ DATABASE_URL=          # postgres:// connection string
 
 # App
 NEXTAUTH_URL=          # e.g. http://localhost:3000
+
+# Agent Gateway (PRD v2.0 R0/R1) — all optional, default off/unset
+CRON_SECRET=                          # also gates /api/admin/backfill-deployments
+MICROBUILD_FLAG_AGENT_GATEWAY=false
+MICROBUILD_FLAG_AGENT_OAUTH=false
+MICROBUILD_FLAG_AGENT_CONSOLE_UI=false
+MICROBUILD_BASE_URL=                  # packages/mcp-server: which deployment to talk to
 ```

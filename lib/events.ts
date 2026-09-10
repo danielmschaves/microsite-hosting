@@ -28,7 +28,18 @@ export type EventType =
   | "index_changed"
   | "api_token_created"
   | "api_token_revoked"
-  | "expiry_notice_sent";
+  | "expiry_notice_sent"
+  // Agent Gateway (PRD v2.0 R0/R1)
+  | "deployment_queued"
+  | "deployment_building"
+  | "deployment_ready"
+  | "deployment_published"
+  | "deployment_failed"
+  | "deployment_canceled"
+  | "agent_client_authorized"
+  | "agent_token_created"
+  | "agent_token_revoked"
+  | "agent_action";
 
 export async function track(
   type: EventType,
@@ -36,18 +47,21 @@ export async function track(
     siteId?: string;
     workspaceId?: string;
     actor?: string;
+    /** "agent" for Agent Gateway-driven mutations; defaults to "human". */
+    actorType?: "human" | "agent";
     meta?: Record<string, unknown>;
   } = {},
 ): Promise<void> {
   try {
     await query(
-      "INSERT INTO events (type, site_id, workspace_id, actor, meta) VALUES ($1, $2, $3, $4, $5)",
+      "INSERT INTO events (type, site_id, workspace_id, actor, meta, actor_type) VALUES ($1, $2, $3, $4, $5, $6)",
       [
         type,
         opts.siteId ?? null,
         opts.workspaceId ?? null,
         opts.actor ?? null,
         JSON.stringify(opts.meta ?? {}),
+        opts.actorType ?? "human",
       ],
     );
   } catch (err) {
