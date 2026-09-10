@@ -182,6 +182,20 @@ async function runCleanup(req: Request) {
     }
   }
 
+  // Phase 6 — PRD v2.0 R3 (CD-23): anonymous view-event retention sweep.
+  // Named (authenticated-actor) site_view events are kept — they're what
+  // the "who viewed" insight and the audit log read from. Anonymous ones
+  // (actor IS NULL) have no owner-facing identity to preserve, so they age
+  // out after ANONYMOUS_VIEW_RETENTION_DAYS regardless of plan.
+  const ANONYMOUS_VIEW_RETENTION_DAYS = 90;
+  const anonymousViewsDeleted = await query<{ id: string }>(
+    `DELETE FROM events
+      WHERE type = 'site_view' AND actor IS NULL
+        AND created_at <= now() - make_interval(days => $1)
+      RETURNING id`,
+    [ANONYMOUS_VIEW_RETENTION_DAYS],
+  );
+
   return NextResponse.json({
     notices,
     trashed: trashed.length,
@@ -195,6 +209,7 @@ async function runCleanup(req: Request) {
       approvalsExpired: approvalsExpired.length,
       approvalsDeleted: approvalsDeleted.length,
       previewsCleaned,
+      anonymousViewsDeleted: anonymousViewsDeleted.length,
     },
   });
 }

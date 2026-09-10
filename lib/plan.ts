@@ -19,6 +19,8 @@ export interface PlanLimits {
   auditDays: number;
   /** Retained versions per site (1 = plain overwrite, no history). */
   versionLimit: number;
+  /** Visitor insights access (PRD §10: — on free, ✓ on team+). */
+  insightsEnabled: boolean;
 }
 
 export const FREE_PLAN: PlanLimits = {
@@ -28,6 +30,7 @@ export const FREE_PLAN: PlanLimits = {
   maxTtl: "7d",
   auditDays: 0,
   versionLimit: 1,
+  insightsEnabled: false,
 };
 
 export const TEAM_PLAN: PlanLimits = {
@@ -37,6 +40,7 @@ export const TEAM_PLAN: PlanLimits = {
   maxTtl: "90d",
   auditDays: 30,
   versionLimit: 5,
+  insightsEnabled: true,
 };
 
 // Legacy exports (AppBar meter + trash window) — keep stable.

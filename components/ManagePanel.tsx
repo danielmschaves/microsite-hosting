@@ -740,6 +740,20 @@ export function ManagePanel({
               </Link>
             </div>
           </div>
+
+          {/* visitor insights (PRD v2.0 CD-23) */}
+          <div className="card" style={{ padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <div>
+                <div style={cardTitle}>Visitor insights</div>
+                <div style={cardSub}>Views over time, top pages, referrers, who viewed. Team plan.</div>
+              </div>
+              <Link href={`/sites/${site.id}/insights`} className="btn btn-neutral">
+                <Eye size={14} />
+                View
+              </Link>
+            </div>
+          </div>
         </div>
 
         {/* ============================== right column */}

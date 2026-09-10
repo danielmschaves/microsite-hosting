@@ -16,6 +16,15 @@ import { resolveProductionServingKey } from "@/lib/deployments";
 // resolution, analytics, and CSP headers all live in exactly one place.
 // ---------------------------------------------------------------------------
 
+function refererOrigin(referer: string | null): string | null {
+  if (!referer) return null;
+  try {
+    return new URL(referer).origin;
+  } catch {
+    return null;
+  }
+}
+
 export async function serveSite(
   req: Request,
   slug: string,
@@ -80,11 +89,15 @@ export async function serveSite(
   // counted regardless of the flag.
   const isPreview = new URL(req.url).searchParams.get("preview") === "1";
   if (!(isPreview && isOwner)) {
+    // Referrer feeds CD-23's insights pipeline ("top pages, referrers");
+    // stripped to origin only — the referring page's full path/query can
+    // carry sensitive tokens the visitor never meant this dashboard to see.
+    const referrer = refererOrigin(req.headers.get("referer"));
     await track("site_view", {
       siteId: site.id,
       workspaceId: site.workspace_id ?? undefined,
       actor: lower ?? undefined,
-      meta: { path: subPath || "index", owner: isOwner, anonymous: !lower },
+      meta: { path: subPath || "index", owner: isOwner, anonymous: !lower, referrer },
     });
   }
 

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Built and deployed: the MVP (PRD §8) plus the v1.0 feature set (teams/workspaces, billing, multi-page sites, presigned uploads, trash, versioning, token API, public links, expiry notifications). The full specification is in `PRD.md`; the sections below describe what exists in the codebase.
 
-**In progress, behind flags (PRD v2.0 — R0 Foundation + R1 Agent Gateway + R2 Previews/gates/guest publish + R3 Real addresses and real numbers, partial):** an MCP server, OAuth 2.1 for agents, and a scoped agent-token model sit alongside the v1.0 product with **zero user-visible change to existing flows** while the corresponding `MICROBUILD_FLAG_*` env vars are unset. R2 has landed in full: CD-14 (every publish path — not just the agent one — now maintains `versions`/`deployments` bookkeeping, and `/s/[slug]` serving can read from it behind the `deployment_serving` flag, self-healing to the legacy `sites.s3_prefix` columns on any inconsistency); CD-15 (per-preview access modes — password/organization/hybrid, argon2id); CD-16 (a workspace `publish_mode` gate — direct/confirm/approval — in front of agent publish/rollback); CD-17 (human approvals for gated publishes/rollbacks, `/teams/[id]/approvals`); CD-18 (anonymous no-signup trial publish at `/try` + claim at `/claim` — the one R2 piece that is deliberately new, live, user-facing surface, not hidden behind a flag, since guest publish has no existing behavior to stay invisible to); CD-19 (cleanup phase 5: approvals sweep, immediate purge for unclaimed guest trials, orphaned preview cleanup). R3 has landed CD-20 (host-based routing via `middleware.ts`, config-gated and a no-op when unconfigured) and CD-21 (real custom domains — CNAME/TXT verification, `/sites/[id]/domains`); CD-22 (certificate issuance), CD-23 (insights pipeline) and CD-24 (the remaining R3 tool) are not yet built. See "Agent Gateway (PRD v2.0)" and "Host-based routing & custom domains (PRD v2.0 R3)" below. `PRD-v2.md` (if present) has the full seven-release plan.
+**In progress, behind flags (PRD v2.0 — R0 Foundation + R1 Agent Gateway + R2 Previews/gates/guest publish + R3 Real addresses and real numbers, partial):** an MCP server, OAuth 2.1 for agents, and a scoped agent-token model sit alongside the v1.0 product with **zero user-visible change to existing flows** while the corresponding `MICROBUILD_FLAG_*` env vars are unset. R2 has landed in full: CD-14 (every publish path — not just the agent one — now maintains `versions`/`deployments` bookkeeping, and `/s/[slug]` serving can read from it behind the `deployment_serving` flag, self-healing to the legacy `sites.s3_prefix` columns on any inconsistency); CD-15 (per-preview access modes — password/organization/hybrid, argon2id); CD-16 (a workspace `publish_mode` gate — direct/confirm/approval — in front of agent publish/rollback); CD-17 (human approvals for gated publishes/rollbacks, `/teams/[id]/approvals`); CD-18 (anonymous no-signup trial publish at `/try` + claim at `/claim` — the one R2 piece that is deliberately new, live, user-facing surface, not hidden behind a flag, since guest publish has no existing behavior to stay invisible to); CD-19 (cleanup phase 5: approvals sweep, immediate purge for unclaimed guest trials, orphaned preview cleanup). R3 has landed CD-20 (host-based routing via `middleware.ts`, config-gated and a no-op when unconfigured), CD-21 (real custom domains — CNAME/TXT verification, `/sites/[id]/domains`), and CD-23/CD-24 (a direct-query visitor-insights pipeline over the existing `events` table, Team-plan gated, `/sites/[id]/insights` + `get_site_insights`); CD-22 (certificate issuance) is explicitly deferred — see "Host-based routing & custom domains" below for why. See "Agent Gateway (PRD v2.0)" and "Host-based routing & custom domains (PRD v2.0 R3)" below. `PRD-v2.md` (if present) has the full seven-release plan.
 
 ## Build Goal (PRD §8.5)
 
@@ -56,6 +56,7 @@ Pages (App Router):
 
 - `/sites/[id]` — owner-only manage panel (two-column, per the design's Site Detail screen): stats, pages list + set-as-index, versions + rollback, who-can-view (only_me/allowlist/team radios + public toggle), lifecycle/TTL, slug rename, danger zone (force-expire, trash/restore/purge), links to `/sites/[id]/domains`
 - `/sites/[id]/domains` — owner or workspace admin (PRD v2.0 CD-21): add/verify/remove custom domains, DNS records shown as copyable rows, set-primary
+- `/sites/[id]/insights` — owner or workspace admin, Team-plan gated (PRD v2.0 CD-23): views over time, top pages, referrers, and named signed-in viewers (anonymous views only ever aggregate)
 - `/teams`, `/teams/[id]` — workspaces (Team Admin screen): stat tiles, all-team-sites table (admin force-expire/trash), members ∥ audit log (CSV export, team plan), invites, billing card, max-TTL policy
 - `/trash` — personal trash + admin view of workspace trash; restore (owner) / purge, "purges in Nd" countdowns
 - `/plans` — Free/Team/Business pricing cards driven by `lib/plan.ts` constants; renders for anonymous and signed-in users
@@ -72,7 +73,8 @@ API / handlers:
 - `/api/sites/[id]/versions/rollback` — POST `{version}`: instant metadata pointer flip to a retained version
 - `/api/sites/[id]/viewers` — GET/POST/DELETE: allowlist CRUD, effective immediately
 - `/api/sites/[id]/domains` (+`/[domainId]`) — session-only custom-domain CRUD (PRD v2.0 CD-21, owner or workspace admin): GET/POST list/add, PATCH `{action:"verify"|"set_primary"}`, DELETE; `lib/domains.ts` generates the DNS records and does the real `dns.resolveTxt` verification, shared with the agent routes below
-- `/api/cleanup` — GET/POST, `Authorization: Bearer $CRON_SECRET`: phase 0 sends T-48h/T-2h expiry emails (marker columns keep any cadence idempotent); phase 1 trashes expired sites (storage kept); phase 2 purges storage for sites trashed > 7 days via `purgeSiteStorage` (unclaimed guest-trial sites skip the grace period — purged as soon as trashed); phase 3 purges incomplete presigned uploads > 24h; phase 4 sweeps stale OAuth requests/rate-limit/idempotency state; phase 5 (PRD v2.0 CD-19) expires+prunes `approvals` and cancels+purges orphaned preview `deployments` stuck in `queued`/`building`/`ready`
+- `/api/sites/[id]/insights` — GET, session-only (owner or workspace admin), Team-plan gated (PRD v2.0 CD-23, `?days=1..90`, default 30): `lib/insights.ts`'s `getSiteInsights` direct-queries `events` (no separate rollup table — same pattern `lib/events.ts`'s `statsForSites` already uses)
+- `/api/cleanup` — GET/POST, `Authorization: Bearer $CRON_SECRET`: phase 0 sends T-48h/T-2h expiry emails (marker columns keep any cadence idempotent); phase 1 trashes expired sites (storage kept); phase 2 purges storage for sites trashed > 7 days via `purgeSiteStorage` (unclaimed guest-trial sites skip the grace period — purged as soon as trashed); phase 3 purges incomplete presigned uploads > 24h; phase 4 sweeps stale OAuth requests/rate-limit/idempotency state; phase 5 (PRD v2.0 CD-19) expires+prunes `approvals` and cancels+purges orphaned preview `deployments` stuck in `queued`/`building`/`ready`; phase 6 (PRD v2.0 CD-23) deletes anonymous (`actor IS NULL`) `site_view` events older than 90 days — named/authenticated ones are kept indefinitely, they're what "who viewed" and the audit log read from
 - `/api/notifications` — GET: caller's live sites expiring <48h, plus (CD-17) pending agent approval requests in workspaces the caller admins (feeds the AppBar bell; no read-state)
 - `/api/guest/publish` — POST, anonymous, multipart single `.html` file: backs `/try`; `lib/guestPublish.ts`
 - `/api/guest/claim` — POST, session-required: backs `/claim`; reads the `mb_guest_token` cookie server-side
@@ -94,6 +96,7 @@ Agent Gateway (PRD v2.0 R0/R1/R2 — all behind flags, see below):
 - `/api/agent/approvals/[id]` — GET, `publish:request` (cheap read bucket): `get_approval_status`
 - `/api/agent/guest/claim` — POST, `site:write`: `claim_trial_site` (CD-18) — claims trial site(s) to the agent token's `granted_by` email
 - `/api/agent/sites/[id]/domains` — GET (`site:read`) `list_site_domains` / POST (`site:write`) `add_custom_domain` (CD-21); `/api/agent/sites/[id]/domains/[domainId]/verify` — POST (`site:write`) `verify_custom_domain`, idempotent
+- `/api/agent/sites/[id]/insights` — GET, `insights:read` (CD-24): `get_site_insights`, same Team-plan gate and `lib/insights.ts` as the session route above
 - `/api/agent-tokens/[id]`, `/api/agent-activity` — session-authenticated Agent Console CRUD/feed
 - `/api/approvals/[id]` — POST, **session-authenticated only, never Bearer** (CD-17): `{decision: "approve"|"reject", note?}`, admin+ only — this omission of `requireAgentScope` IS the "agents cannot self-approve" enforcement mechanism, not a policy check layered on top
 - `/api/admin/backfill-deployments` — `CRON_SECRET`-authed, one-time-but-idempotent backfill of `versions`/`deployments` from `site_versions`/`sites` + a read-only addressing-parity verifier (`lib/backfillDeployments.ts`)
@@ -119,7 +122,7 @@ Ported from the "MicroBuild" Claude Design project. Do not hand-edit tokens ad h
 - `site_versions` — per-publish history (site_id, version, s3_prefix, index_key, sizes). The `sites` row is the live pointer; each version keeps its own S3 prefix, so rollback is a pointer flip and pruning (plan `versionLimit`: free 1 / team 5) never touches the live prefix. All storage deletion goes through `purgeSiteStorage` in `lib/createSite.ts`
 - `api_tokens` — owner_email, name, token_hash (sha256, unique), token_prefix, last_used_at, revoked_at
 - `site_viewers` — site_id, viewer_email (the allowlist)
-- `events` — first-party analytics (type, site_id, actor, meta jsonb, actor_type `human|agent`); captured server-side via `lib/events.ts` `track()`; no third-party SDK
+- `events` — first-party analytics (type, site_id, actor, meta jsonb, actor_type `human|agent`); captured server-side via `lib/events.ts` `track()`; no third-party SDK. `site_view` rows' `meta` carries `{path, owner, anonymous, referrer}` (CD-23: `referrer` is the origin only, never a full URL) — `lib/insights.ts` queries this table directly, no separate rollup table
 
 Lifecycle: live (`deleted_at IS NULL`, unexpired) → trash (`deleted_at` set, storage kept, restorable) → purged (`purged_at` set after `TRASH_DAYS`). Serving requires live. The S3 prefix embeds a timestamp so trashed sites never collide with a new site reusing the slug.
 
@@ -228,7 +231,7 @@ also require an `Idempotency-Key` header (`lib/idempotency.ts`, replay window 24
 regardless of `publish_mode`; rate limits are enforced per-token in `requireAgentScope`
 (`lib/rateLimit.ts`: 120 reads/min, 20 writes/min, 5 publishes/min).
 
-## Host-based routing & custom domains (PRD v2.0 R3, partial — CD-20/CD-21)
+## Host-based routing, custom domains & insights (PRD v2.0 R3, partial — CD-20/CD-21/CD-23/CD-24)
 
 **Host-based routing (CD-20)** is config-gated and a no-op by default — this deployment doesn't own
 any particular domain out of the box, so `{slug}.<apex>`/`{deploymentId}.<previewApex>` synthetic
@@ -254,6 +257,29 @@ per-plan domain counts are part of R5's billing v2, not implemented here). Certi
 forever until CD-22 (a later release) actually wires up ACME — the Domains UI shows the field as-is
 rather than hiding it, so it never silently lies once real values start appearing.
 
+**CD-22 (certificate issuance) is a deliberate skip, not an oversight.** Real ACME issuance needs
+the deployment reachable on port 80/443 for arbitrary verified hostnames and a registration against
+a real certificate authority — genuinely production infrastructure that can't be meaningfully built
+*or* verified inside a sandboxed dev environment (no way to bind privileged ports, no real domains
+to test against, and exercising Let's Encrypt's real endpoints from a throwaway environment has
+actual external side effects — account registration, rate limits). Land it as its own change, with
+real domain access to test the full HTTP-01/DNS-01 challenge → issuance → renewal cycle against a
+staging CA, rather than shipping ACME wiring nobody has actually watched succeed once.
+
+**Visitor insights (CD-23/CD-24)** reuse the existing `events` table directly rather than a new
+rollups/ETL pipeline — `lib/insights.ts`'s `getSiteInsights` runs a handful of `GROUP BY` queries
+(views over time, top pages, referrers, named viewers) scoped to a day window, the same
+direct-query pattern `lib/events.ts`'s `statsForSites` already uses for the dashboard's view
+counts. Named viewers are **only ever authenticated actors** (`events.actor IS NOT NULL`) —
+anonymous public views aggregate into counts alone, never a name, matching PRD E10's privacy line
+exactly; nothing new is learnable about an anonymous visitor that wasn't already inferable from the
+existing `site_view` event. Referrer capture (`lib/siteServing.ts`) stores only the `Referer`
+header's **origin**, never its full path or query string, since those can carry tokens the
+referring page never intended this dashboard to see. Gated behind `plan.insightsEnabled` (free:
+false, team: true) — the same 402+`upgradeUrl` shape used by every other plan gate in this app.
+Retention: cleanup phase 6 deletes anonymous `site_view` events past 90 days; named ones are kept
+(they're what "who viewed" and the audit log read from).
+
 ## Scope
 
 **Shipped (MVP + v1.0):** multi-page `.html` upload (multipart + presigned), login-walled viewing (Google/GitHub), per-site allowlists, public link mode, TTL presets + notifications (T-48h/T-2h email + bell), trash/restore/purge via cron, versioning + rollback, teams/workspaces with roles/invites/audit/billing (Stripe), max-TTL policy, token REST API, dashboard/trash/plans/api-cli pages.
@@ -266,17 +292,18 @@ publish path), a workspace publish-approval gate + inbox UI, and (unflagged, del
 user-facing) anonymous no-signup trial publish + claim. See "Agent Gateway" above.
 
 **Built, config-gated (PRD v2.0 R3, partial):** host-based routing (`middleware.ts`, config-gated,
-no-op when unconfigured) and real custom domains — add/verify/remove, DNS record generation,
-`dns.resolveTxt` verification, a Domains panel at `/sites/[id]/domains`, 3 more agent tools (21
-total). See "Host-based routing & custom domains" above.
+no-op when unconfigured), real custom domains (add/verify/remove, DNS record generation,
+`dns.resolveTxt` verification, a Domains panel at `/sites/[id]/domains`), and Team-plan-gated
+visitor insights (views over time, top pages, referrers, named signed-in viewers, a 90-day
+anonymous-event retention sweep) — 4 more agent tools (22 total). See "Host-based routing, custom
+domains & insights" above.
 
 **Still out (v1.1+ / PRD v2.0 R3+):** certificate issuance (CD-22 — `site_domains.cert_status` is
-bookkeeping-only today, no real ACME wired up), the visitor-insights pipeline + `get_site_insights`
-(CD-23/CD-24), dedicated CLI package (`@microbuild/cli` — the human-facing v1 API already exists;
-`@microbuild/mcp` is the agent-facing one), custom SSO (SAML/OIDC, M3), rate limiting on the v1 API
-(the *agent* API is rate-limited; v1 is not), anonymous-view event retention sweep, version diffs,
-build pipeline, an admin UI for changing a workspace's `publish_mode` or per-plan domain limits
-(DB/API only today).
+bookkeeping-only today, no real ACME wired up; deliberately deferred, see above for why), dedicated
+CLI package (`@microbuild/cli` — the human-facing v1 API already exists; `@microbuild/mcp` is the
+agent-facing one), custom SSO (SAML/OIDC, M3), rate limiting on the v1 API (the *agent* API is
+rate-limited; v1 is not), version diffs, build pipeline, an admin UI for changing a workspace's
+`publish_mode` or per-plan domain limits (DB/API only today).
 
 ## Environment Variables (core ones required; see DEPLOY.md for optional Resend/Stripe/presign vars)
 
