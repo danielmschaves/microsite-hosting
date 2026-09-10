@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Built and deployed: the MVP (PRD §8) plus the v1.0 feature set (teams/workspaces, billing, multi-page sites, presigned uploads, trash, versioning, token API, public links, expiry notifications). The full specification is in `PRD.md`; the sections below describe what exists in the codebase.
 
-**In progress, behind flags (PRD v2.0 — R0 Foundation + R1 Agent Gateway):** an MCP server, OAuth 2.1 for agents, and a scoped agent-token model sit alongside the v1.0 product with **zero user-visible change** while the corresponding `MICROBUILD_FLAG_*` env vars are unset. See "Agent Gateway (PRD v2.0)" below. `PRD-v2.md` (if present) has the full seven-release plan; only R0+R1 are implemented so far.
+**In progress, behind flags (PRD v2.0 — R0 Foundation + R1 Agent Gateway + R2 in progress):** an MCP server, OAuth 2.1 for agents, and a scoped agent-token model sit alongside the v1.0 product with **zero user-visible change** while the corresponding `MICROBUILD_FLAG_*` env vars are unset. R2's first piece (CD-14) has landed: every publish path (not just the agent one) now maintains `versions`/`deployments` bookkeeping, and `/s/[slug]` serving can read from it behind the `deployment_serving` flag, self-healing to the legacy `sites.s3_prefix` columns on any inconsistency. See "Agent Gateway (PRD v2.0)" below. `PRD-v2.md` (if present) has the full seven-release plan.
 
 ## Build Goal (PRD §8.5)
 
@@ -129,19 +129,32 @@ feature flags (`lib/flags.ts`) so v1.0 behavior is byte-for-byte unchanged while
   smoke-tested before the MCP server/tools are wired to it.
 - `agent_console_ui` — gates whether `/teams/[id]/agents` renders/404s and whether `TeamPanel.tsx`
   links to it.
+- `deployment_serving` (PRD v2.0 R2, CD-14) — when on, `/s/[slug]` resolves its object-storage key
+  via `sites.production_deployment_id → deployments.version_id → versions.storage_key`
+  (`lib/deployments.ts` `resolveProductionServingKey`) instead of `sites.s3_prefix`/`index_key`
+  directly. Self-healing: on any missing deployment/version or an addressing mismatch (the same
+  invariant `verifyAddressingParity()` checks), it falls back to the legacy columns and
+  `console.warn`s rather than failing the request — flipping this flag is provably a no-op in bytes
+  served today, since every publish path keeps `versions.storage_key` equal to `sites.s3_prefix` by
+  construction (see below).
 
-**Data model / auth model:** `sites.production_deployment_id` points at a synthetic `deployments`
-row backfilled by `lib/backfillDeployments.ts` for every live site — additive only, `sites`/
-`site_versions`/`api_tokens` are untouched and remain what actually serves `/s/[slug]`. Agent
-tokens (`mb_agent_` prefix, `lib/agentTokens.ts`, sha256-hashed like `api_tokens`) are bound to a
-**workspace**, not an owner email, and carry a scope array (`lib/agentAuthz.ts` `AgentScope`, 14
-scopes mirroring Showly's model — only 8 are enforced by any R1 tool today, see
-`R1_ENFORCED_SCOPES`). Every `/api/agent/**` route checks `sites.workspace_id =
-agent_tokens.workspace_id` directly — it deliberately does **not** reuse `/api/v1`'s
-owner-email-only `ownedSite()` helper. `lib/deployments.ts`'s state machine
-(`queued→building→ready→published|failed|canceled`) is additive bookkeeping on top of
-`publishSiteVersion` — it does not replace it; a later release flips serving to read from
-`deployments` instead of `sites.s3_prefix`.
+**Data model / auth model:** `sites.production_deployment_id` points at a `deployments` row that
+**every** publish path now maintains — `lib/createSite.ts`'s `publishSiteVersion` (dashboard
+upload, presigned completion, v1 API) and `createSiteRecord` (every new site) both call
+`lib/deployments.ts`'s `recordProductionDeployment` after their own transaction commits; agent
+publishes and `rollbackToVersion` go through the same helper. This closed a real R1 gap where only
+agent-initiated publishes updated the deployment model — everything else left
+`production_deployment_id` `NULL` or stale. The helper is best-effort/non-blocking (never throws;
+logs and returns `null` on failure) precisely because `resolveProductionServingKey`'s self-healing
+read is the actual safety net, not perfect bookkeeping. `sites`/`site_versions`/`api_tokens` are
+still untouched by any of this and remain fully functional on their own. Agent tokens (`mb_agent_`
+prefix, `lib/agentTokens.ts`, sha256-hashed like `api_tokens`) are bound to a **workspace**, not an
+owner email, and carry a scope array (`lib/agentAuthz.ts` `AgentScope`, 14 scopes mirroring
+Showly's model — only 8 are enforced by any R1 tool today, see `R1_ENFORCED_SCOPES`). Every
+`/api/agent/**` route checks `sites.workspace_id = agent_tokens.workspace_id` directly — it
+deliberately does **not** reuse `/api/v1`'s owner-email-only `ownedSite()` helper.
+`lib/deployments.ts`'s state machine (`queued→building→ready→published|failed|canceled`) is
+additive bookkeeping layered on top of `publishSiteVersion`, not a replacement for it.
 
 **Packages:** `packages/mcp-server` (`@microbuild/mcp`, npm workspace) — stdio MCP server, `npx
 @microbuild/mcp install --to claude-code|codex|cursor` writes client config and runs the
@@ -193,10 +206,11 @@ DATABASE_URL=          # postgres:// connection string
 # App
 NEXTAUTH_URL=          # e.g. http://localhost:3000
 
-# Agent Gateway (PRD v2.0 R0/R1) — all optional, default off/unset
+# Agent Gateway (PRD v2.0 R0/R1/R2) — all optional, default off/unset
 CRON_SECRET=                          # also gates /api/admin/backfill-deployments
 MICROBUILD_FLAG_AGENT_GATEWAY=false
 MICROBUILD_FLAG_AGENT_OAUTH=false
 MICROBUILD_FLAG_AGENT_CONSOLE_UI=false
+MICROBUILD_FLAG_DEPLOYMENT_SERVING=false
 MICROBUILD_BASE_URL=                  # packages/mcp-server: which deployment to talk to
 ```

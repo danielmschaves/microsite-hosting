@@ -4,6 +4,8 @@ import { query, type SiteRow } from "@/lib/db";
 import { getObject } from "@/lib/storage";
 import { canViewSite } from "@/lib/authz";
 import { track } from "@/lib/events";
+import { isFlagEnabled } from "@/lib/flags";
+import { resolveProductionServingKey } from "@/lib/deployments";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,9 +50,19 @@ export async function GET(
   }
 
   // 4. Resolve the object key. MVP stores a single index.html; sub-paths are
-  //    supported for forward-compatibility with multi-file sites.
+  //    supported for forward-compatibility with multi-file sites. Behind the
+  //    deployment_serving flag (PRD v2.0 CD-14), resolve via the versions/
+  //    deployments model instead of sites.s3_prefix directly — self-healing
+  //    to the legacy columns on any inconsistency, so this is provably a
+  //    no-op in what gets served either way (see resolveProductionServingKey's
+  //    doc comment in lib/deployments.ts).
+  const flagOn = await isFlagEnabled("deployment_serving", site.workspace_id);
+  const { prefix, indexKey } = flagOn
+    ? await resolveProductionServingKey(site)
+    : { prefix: site.s3_prefix, indexKey: site.index_key };
+
   const subPath = (path || []).join("/");
-  const key = subPath ? `${site.s3_prefix}${subPath}` : site.index_key;
+  const key = subPath ? `${prefix}${subPath}` : indexKey;
 
   const object = await getObject(key);
   if (!object) {

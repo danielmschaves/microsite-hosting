@@ -77,6 +77,10 @@ services:
       MICROBUILD_FLAG_AGENT_GATEWAY: ${MICROBUILD_FLAG_AGENT_GATEWAY:-false}
       MICROBUILD_FLAG_AGENT_OAUTH: ${MICROBUILD_FLAG_AGENT_OAUTH:-false}
       MICROBUILD_FLAG_AGENT_CONSOLE_UI: ${MICROBUILD_FLAG_AGENT_CONSOLE_UI:-false}
+      # PRD v2.0 R2 (CD-14): serving reads versions/deployments instead of
+      # sites.s3_prefix directly when true; self-healing to the legacy
+      # columns on any inconsistency, so this is safe to flip locally.
+      MICROBUILD_FLAG_DEPLOYMENT_SERVING: ${MICROBUILD_FLAG_DEPLOYMENT_SERVING:-false}
     ports:
       - "3000:3000"
 

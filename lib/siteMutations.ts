@@ -4,7 +4,7 @@ import { normalizeSlug } from "./slug";
 import { isVisibility } from "./authz";
 import { planForWorkspace, allowedTtlPresets } from "./plan";
 import { track } from "./events";
-import { createDeployment, transitionDeployment } from "./deployments";
+import { recordProductionDeployment } from "./deployments";
 
 // Owner-scoped site mutations shared by the session route
 // (PATCH /api/sites/[id]) and the token API (PATCH /api/v1/sites/[slug]).
@@ -206,31 +206,22 @@ export async function rollbackToVersion(
   });
 
   // Audit-trail symmetry with the deployments model: record the rollback as
-  // its own versions/deployments entry. Best-effort — this never blocks the
-  // pointer flip above, which is already committed.
-  try {
-    const versionRow = await query<{ id: string }>(
-      "SELECT id FROM versions WHERE site_id = $1 AND number = $2",
-      [site.id, version],
-    );
-    if (versionRow[0]) {
-      const deployment = await createDeployment({
-        siteId: site.id,
-        versionId: versionRow[0].id,
-        target: "production",
-        createdBy: email,
-        actorType: (meta.actorType as "human" | "agent") ?? "human",
-      });
-      const building = await transitionDeployment(deployment.id, "building");
-      const ready = await transitionDeployment(building.id, "ready");
-      const published = await transitionDeployment(ready.id, "published");
-      await query("UPDATE sites SET production_deployment_id = $1 WHERE id = $2", [
-        published.id,
-        site.id,
-      ]);
-    }
-  } catch (err) {
-    console.error("[rollback] deployment bookkeeping failed", err);
+  // its own deployment entry (PRD v2.0 CD-14 bookkeeping, shared with every
+  // other publish path via lib/deployments.ts's recordProductionDeployment
+  // — best-effort, never blocks the pointer flip above, which is already
+  // committed).
+  const versionRow = await query<{ id: string }>(
+    "SELECT id FROM versions WHERE site_id = $1 AND number = $2",
+    [site.id, version],
+  );
+  if (versionRow[0]) {
+    await recordProductionDeployment({
+      siteId: site.id,
+      versionId: versionRow[0].id,
+      email,
+      actorType: (meta.actorType as "human" | "agent") ?? "human",
+      agentClientId: meta.clientId as string | undefined,
+    });
   }
 
   return { status: 200, body: { ok: true, version } };

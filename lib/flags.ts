@@ -9,9 +9,18 @@ import { query } from "./db";
 // redeploy.
 // ---------------------------------------------------------------------------
 
-export type FlagName = "agent_gateway" | "agent_oauth" | "agent_console_ui";
+export type FlagName =
+  | "agent_gateway"
+  | "agent_oauth"
+  | "agent_console_ui"
+  | "deployment_serving";
 
-export const ALL_FLAGS: FlagName[] = ["agent_gateway", "agent_oauth", "agent_console_ui"];
+export const ALL_FLAGS: FlagName[] = [
+  "agent_gateway",
+  "agent_oauth",
+  "agent_console_ui",
+  "deployment_serving",
+];
 
 function envOverride(name: FlagName): boolean | null {
   const raw = process.env[`MICROBUILD_FLAG_${name.toUpperCase()}`];

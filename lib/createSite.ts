@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
-import { query, withTransaction, type SiteRow, type WorkspaceRow } from "./db";
+import {
+  query,
+  withTransaction,
+  type SiteRow,
+  type WorkspaceRow,
+  type VersionSource,
+  type DeploymentRow,
+} from "./db";
 import { deletePrefix } from "./storage";
 import { releaseCasRefs } from "./cas";
 import { generateSlug, normalizeSlug } from "./slug";
@@ -8,6 +15,7 @@ import { getMembership } from "./teams";
 import { isVisibility, type Visibility } from "./authz";
 import { planForWorkspace, allowedTtlPresets, fakeTeam, type PlanLimits } from "./plan";
 import { track } from "./events";
+import { recordProductionDeployment } from "./deployments";
 
 // Shared machinery for both upload paths (multipart fallback and presigned
 // browser->S3). Validation runs before any bytes move; createSiteRecord runs
@@ -276,6 +284,9 @@ export async function createSiteRecord(opts: {
   workspaceId: string | null;
   visibility: Visibility;
   viewers: string[];
+  actorType?: "human" | "agent";
+  agentClientId?: string | null;
+  source?: VersionSource;
 }): Promise<SiteRow> {
   const expiresAt = expiresAtFrom(opts.ttl);
   const inserted = await query<SiteRow>(
@@ -312,6 +323,38 @@ export async function createSiteRecord(opts: {
       opts.email,
     ],
   );
+
+  // Agent Gateway (PRD v2.0 CD-14): mirror the same version into the
+  // versions/deployments bookkeeping so `sites.production_deployment_id` is
+  // set for every new site, not just agent-created ones. Best-effort, own
+  // try/catch — this is the free-tier signup path and must never fail site
+  // creation because deployment bookkeeping hiccuped.
+  try {
+    const versionRows = await query<{ id: string }>(
+      `INSERT INTO versions (site_id, number, storage_key, source, author_email, actor_type)
+       VALUES ($1, 1, $2, $3, $4, $5)
+       ON CONFLICT (site_id, number) DO NOTHING
+       RETURNING id`,
+      [
+        site.id,
+        opts.s3Prefix,
+        opts.source ?? "upload",
+        opts.email,
+        opts.actorType ?? "human",
+      ],
+    );
+    if (versionRows[0]) {
+      await recordProductionDeployment({
+        siteId: site.id,
+        versionId: versionRows[0].id,
+        email: opts.email,
+        actorType: opts.actorType ?? "human",
+        agentClientId: opts.agentClientId,
+      });
+    }
+  } catch (err) {
+    console.error(`[createSite] deployment bookkeeping failed for new site ${site.id}`, err);
+  }
 
   const viewers = opts.visibility === "allowlist" ? opts.viewers : [];
   for (const viewer of viewers) {
@@ -355,11 +398,14 @@ export async function publishSiteVersion(opts: {
   pageCount: number;
   ttl: TtlPreset;
   versionLimit: number;
-}): Promise<{ site: SiteRow; version: number }> {
+  actorType?: "human" | "agent";
+  agentClientId?: string | null;
+  source?: VersionSource;
+}): Promise<{ site: SiteRow; version: number; deployment: DeploymentRow | null }> {
   const expiresAt = expiresAtFrom(opts.ttl);
   const indexKey = `${opts.s3Prefix}${opts.indexName}`;
 
-  const { updated, version, prunedPrefixes } = await withTransaction(
+  const { updated, version, versionId, prunedPrefixes } = await withTransaction(
     async (tx) => {
       // Serialize concurrent publishes to the same site.
       await tx("SELECT id FROM sites WHERE id = $1 FOR UPDATE", [opts.site.id]);
@@ -386,6 +432,26 @@ export async function publishSiteVersion(opts: {
           opts.email,
         ],
       );
+
+      // Agent Gateway (PRD v2.0 CD-14): record the matching versions row
+      // under the SAME row lock as the site_versions insert above — closes
+      // a race the old post-commit bookkeeping (removed) had, where two
+      // concurrent publishes could interleave after the lock was released.
+      const versionRows = await tx<{ id: string }>(
+        `INSERT INTO versions (site_id, number, storage_key, source, author_email, actor_type)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (site_id, number) DO NOTHING
+         RETURNING id`,
+        [
+          opts.site.id,
+          next,
+          opts.s3Prefix,
+          opts.source ?? "upload",
+          opts.email,
+          opts.actorType ?? "human",
+        ],
+      );
+      const versionId = versionRows[0]?.id ?? null;
 
       const updated = (
         await tx<SiteRow>(
@@ -421,6 +487,7 @@ export async function publishSiteVersion(opts: {
       return {
         updated,
         version: next,
+        versionId,
         prunedPrefixes: pruned.map((p) => p.s3_prefix),
       };
     },
@@ -447,7 +514,22 @@ export async function publishSiteVersion(opts: {
     },
   });
 
-  return { site: updated, version };
+  // Agent Gateway (PRD v2.0 CD-14): best-effort, outside the transaction —
+  // same "record after commit" placement as the prune loop above. Every
+  // caller of publishSiteVersion (dashboard upload, presigned completion,
+  // v1 API, agent publish) gets this for free now, closing the gap where
+  // only the agent path used to update production_deployment_id.
+  const deployment = versionId
+    ? await recordProductionDeployment({
+        siteId: opts.site.id,
+        versionId,
+        email: opts.email,
+        actorType: opts.actorType ?? "human",
+        agentClientId: opts.agentClientId,
+      })
+    : null;
+
+  return { site: updated, version, deployment };
 }
 
 /**

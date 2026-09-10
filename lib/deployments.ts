@@ -5,10 +5,9 @@ import {
   type DeploymentStatus,
   type DeploymentTarget,
   type SiteRow,
+  type VersionRow,
 } from "./db";
-import { publishSiteVersion } from "./createSite";
 import { track, type EventType } from "./events";
-import type { TtlPreset } from "./ttl";
 import { canTransition, IllegalTransitionError } from "./deploymentStateMachine";
 
 // ---------------------------------------------------------------------------
@@ -134,77 +133,106 @@ export async function transitionDeployment(
 }
 
 /**
- * Publish a production deployment: wraps the existing publishSiteVersion
- * (which remains the only code that moves the sites pointer in R0/R1),
- * records the matching versions/deployments rows, and updates
- * sites.production_deployment_id. A failure between the two steps leaves
- * site_versions briefly ahead of versions/deployments — acceptable because
- * nothing reads the new tables for serving yet, and the next
- * verifyAddressingParity() run heals any drift (see lib/backfillDeployments.ts).
+ * Walk a fresh `versions` row through the full deployment lifecycle to
+ * `published` and point `sites.production_deployment_id` at it. This is the
+ * single bookkeeping implementation every publish path calls (PRD v2.0
+ * CD-14) — previously this only ran for agent-initiated publishes
+ * (`lib/deployments.ts`'s old `publishDeployment`), leaving every other
+ * publish path (dashboard upload, presigned completion, v1 API, brand-new
+ * sites) with a permanently NULL or stale `production_deployment_id`. Never
+ * throws — a bookkeeping failure must not block a publish that already
+ * succeeded at the `sites`/`site_versions` level; CD-14's serving-time read
+ * (`resolveProductionServingKey`) is the safety net that makes this
+ * best-effort design safe (see its own doc comment).
  */
-export async function publishDeployment(opts: {
-  site: SiteRow;
+export async function recordProductionDeployment(opts: {
+  siteId: string;
+  versionId: string;
   email: string;
-  s3Prefix: string;
-  indexName: string;
-  totalBytes: number;
-  pageCount: number;
-  ttl: TtlPreset;
-  versionLimit: number;
   actorType: "human" | "agent";
   agentClientId?: string | null;
-  source?: "upload" | "agent" | "github" | "template" | "rollback";
-}): Promise<{ site: SiteRow; version: number; deployment: DeploymentRow }> {
-  const published = await publishSiteVersion({
-    site: opts.site,
-    email: opts.email,
-    s3Prefix: opts.s3Prefix,
-    indexName: opts.indexName,
-    totalBytes: opts.totalBytes,
-    pageCount: opts.pageCount,
-    ttl: opts.ttl,
-    versionLimit: opts.versionLimit,
-  });
+}): Promise<DeploymentRow | null> {
+  try {
+    const deployment = await createDeployment({
+      siteId: opts.siteId,
+      versionId: opts.versionId,
+      target: "production",
+      createdBy: opts.email,
+      actorType: opts.actorType,
+      agentClientId: opts.agentClientId,
+    });
+    const built = await transitionDeployment(deployment.id, "building");
+    const ready = await transitionDeployment(built.id, "ready");
+    const published = await transitionDeployment(ready.id, "published");
 
-  const versionRows = await query<{ id: string }>(
-    "SELECT id FROM versions WHERE site_id = $1 AND number = $2",
-    [published.site.id, published.version],
+    await query("UPDATE sites SET production_deployment_id = $1 WHERE id = $2", [
+      published.id,
+      opts.siteId,
+    ]);
+    return published;
+  } catch (err) {
+    console.error(`[deployments] bookkeeping failed for site ${opts.siteId}`, err);
+    return null;
+  }
+}
+
+export interface ProductionServingKey {
+  prefix: string;
+  indexKey: string;
+  usedDeployment: boolean;
+}
+
+/**
+ * Resolve the object-storage prefix/index for serving a site's live content,
+ * preferring the deployment model but self-healing to the legacy
+ * `sites.s3_prefix`/`sites.index_key` columns on any inconsistency — missing
+ * deployment, missing version, or (the key invariant, identical to
+ * `verifyAddressingParity()`'s own check in lib/backfillDeployments.ts)
+ * `versions.storage_key !== sites.s3_prefix`. Never throws, never fails the
+ * request — only logs, since a systemic bookkeeping bug must degrade to
+ * "exactly today's behavior," not to a broken site. This is CD-14's serving
+ * flip: content-addressed/CAS-backed versions (not yet wired into any
+ * publish path — content_digest is NULL everywhere today) are the only
+ * future case where the deployment path and s3_prefix could legitimately
+ * diverge; until then this is provably a no-op resolution.
+ */
+export async function resolveProductionServingKey(site: SiteRow): Promise<ProductionServingKey> {
+  const legacy: ProductionServingKey = {
+    prefix: site.s3_prefix,
+    indexKey: site.index_key,
+    usedDeployment: false,
+  };
+  if (!site.production_deployment_id) return legacy;
+
+  const deploymentRows = await query<DeploymentRow>(
+    "SELECT * FROM deployments WHERE id = $1 AND target = 'production' AND status = 'published'",
+    [site.production_deployment_id],
   );
-  let versionId = versionRows[0]?.id;
-  if (!versionId) {
-    const inserted = await query<{ id: string }>(
-      `INSERT INTO versions (site_id, number, storage_key, source, author_email, actor_type)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (site_id, number) DO UPDATE SET storage_key = EXCLUDED.storage_key
-       RETURNING id`,
-      [
-        published.site.id,
-        published.version,
-        opts.s3Prefix,
-        opts.source ?? "upload",
-        opts.email,
-        opts.actorType,
-      ],
+  const deployment = deploymentRows[0];
+  if (!deployment) {
+    console.warn(
+      `[deployments] production_deployment_id ${site.production_deployment_id} for site ${site.id} (${site.slug}) is missing or not published — falling back to legacy addressing`,
     );
-    versionId = inserted[0].id;
+    return legacy;
   }
 
-  const deployment = await createDeployment({
-    siteId: published.site.id,
-    versionId,
-    target: "production",
-    createdBy: opts.email,
-    actorType: opts.actorType,
-    agentClientId: opts.agentClientId,
-  });
-  const built = await transitionDeployment(deployment.id, "building");
-  const ready = await transitionDeployment(built.id, "ready");
-  const publishedDeployment = await transitionDeployment(ready.id, "published");
-
-  await query("UPDATE sites SET production_deployment_id = $1 WHERE id = $2", [
-    publishedDeployment.id,
-    published.site.id,
+  const versionRows = await query<VersionRow>("SELECT * FROM versions WHERE id = $1", [
+    deployment.version_id,
   ]);
+  const version = versionRows[0];
+  if (!version) {
+    console.warn(
+      `[deployments] deployment ${deployment.id} for site ${site.id} (${site.slug}) has no versions row — falling back to legacy addressing`,
+    );
+    return legacy;
+  }
 
-  return { site: published.site, version: published.version, deployment: publishedDeployment };
+  if (version.storage_key !== site.s3_prefix) {
+    console.warn(
+      `[deployments] addressing drift for site ${site.id} (${site.slug}): versions.storage_key="${version.storage_key}" !== sites.s3_prefix="${site.s3_prefix}" — falling back to legacy addressing`,
+    );
+    return legacy;
+  }
+
+  return { prefix: version.storage_key, indexKey: site.index_key, usedDeployment: true };
 }
